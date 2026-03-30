@@ -13,7 +13,7 @@ use super::event_sink::EventSink;
 use super::identity::RunIdentity;
 use super::progress::{ProgressStatus, TOOL_CALL_PROGRESS_ACTIVITY_TYPE, ToolCallProgressState};
 use crate::registry_spec::AgentSpec;
-use crate::state::{Snapshot, StateKey};
+use crate::state::{Snapshot, StateCommand, StateKey};
 
 /// Tool execution status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,6 +194,47 @@ impl ToolResult {
     pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
         self.metadata.insert(key.into(), value.into());
         self
+    }
+}
+
+/// The complete output of a tool execution: result (for the LLM) + command (side-effects).
+///
+/// Tools that don't need side-effects can simply use `ToolResult::into()` or
+/// `.into()` to create a `ToolOutput` with an empty `StateCommand`.
+pub struct ToolOutput {
+    /// The result data returned to the LLM.
+    pub result: ToolResult,
+    /// State mutations, scheduled actions, and effects produced by this tool.
+    /// Uses the same `StateCommand` mechanism as plugin phase hooks.
+    pub command: StateCommand,
+}
+
+impl std::fmt::Debug for ToolOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolOutput")
+            .field("result", &self.result)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ToolOutput {
+    /// Create a new output with the given result and an empty command.
+    pub fn new(result: ToolResult) -> Self {
+        Self {
+            result,
+            command: StateCommand::new(),
+        }
+    }
+
+    /// Create a new output with both result and side-effects.
+    pub fn with_command(result: ToolResult, command: StateCommand) -> Self {
+        Self { result, command }
+    }
+}
+
+impl From<ToolResult> for ToolOutput {
+    fn from(result: ToolResult) -> Self {
+        Self::new(result)
     }
 }
 
@@ -461,7 +502,7 @@ impl Tool for FrontEndTool {
         self.descriptor.clone()
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         use super::suspension::{PendingToolCall, SuspendTicket, Suspension, ToolCallResumeMode};
 
         let tool_name = &self.descriptor.id;
@@ -479,15 +520,18 @@ impl Tool for FrontEndTool {
             ToolCallResumeMode::UseDecisionAsToolResult,
         );
 
-        Ok(ToolResult::suspended_with(
-            tool_name,
-            "Waiting for frontend",
-            ticket,
-        ))
+        Ok(ToolResult::suspended_with(tool_name, "Waiting for frontend", ticket).into())
     }
 }
 
 /// Async trait for implementing agent tools.
+///
+/// Tools return [`ToolOutput`] which bundles both the LLM-visible result and
+/// any side-effects (state mutations, scheduled actions, effects) using the
+/// same [`StateCommand`] mechanism as plugin phase hooks.
+///
+/// Tools that don't need side-effects can return `Ok(ToolResult::success(...).into())`
+/// — the `From<ToolResult>` conversion creates an empty `StateCommand` automatically.
 #[async_trait]
 pub trait Tool: Send + Sync {
     /// Return the descriptor for this tool.
@@ -499,7 +543,7 @@ pub trait Tool: Send + Sync {
     }
 
     /// Execute the tool with the given arguments and context.
-    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError>;
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError>;
 }
 
 /// A strongly-typed tool trait that derives its descriptor schema from `Args`.
@@ -560,7 +604,7 @@ pub trait TypedTool: Send + Sync {
         &self,
         args: Self::Args,
         ctx: &ToolCallContext,
-    ) -> Result<ToolResult, ToolError>;
+    ) -> Result<ToolOutput, ToolError>;
 }
 
 #[async_trait]
@@ -579,7 +623,7 @@ impl<T: TypedTool> Tool for T {
         Ok(())
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let typed: T::Args =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
         self.validate(&typed)
@@ -710,8 +754,8 @@ mod tests {
             &self,
             args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::success("echo", args))
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolResult::success("echo", args).into())
         }
     }
 
@@ -722,8 +766,8 @@ mod tests {
             .execute(json!({"msg": "hello"}), &ToolCallContext::test_default())
             .await
             .unwrap();
-        assert!(result.is_success());
-        assert_eq!(result.data["msg"], "hello");
+        assert!(result.result.is_success());
+        assert_eq!(result.result.data["msg"], "hello");
     }
 
     #[test]
@@ -758,8 +802,8 @@ mod tests {
             &self,
             _args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::success("v", json!(null)))
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolResult::success("v", json!(null)).into())
         }
     }
 
@@ -779,7 +823,7 @@ mod tests {
             .execute(json!("test"), &ToolCallContext::test_default())
             .await
             .unwrap();
-        assert!(result.is_success());
+        assert!(result.result.is_success());
     }
 
     /// A mock tool that reports activity during execution.
@@ -795,14 +839,14 @@ mod tests {
             &self,
             _args: Value,
             ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
+        ) -> Result<ToolOutput, ToolError> {
             ctx.report_activity("progress", "50% done").await;
             ctx.report_activity_delta(
                 "progress",
                 json!({"op": "replace", "path": "/percent", "value": 100}),
             )
             .await;
-            Ok(ToolResult::success("reporter", json!(null)))
+            Ok(ToolResult::success("reporter", json!(null)).into())
         }
     }
 
@@ -818,7 +862,7 @@ mod tests {
 
         let tool = ActivityReportingTool;
         let result = tool.execute(json!({}), &ctx).await.unwrap();
-        assert!(result.is_success());
+        assert!(result.result.is_success());
 
         let events = sink.events();
         assert_eq!(events.len(), 2);
@@ -1279,7 +1323,7 @@ mod tests {
             .execute(json!("test"), &ToolCallContext::test_default())
             .await
             .unwrap();
-        assert!(result.is_success());
+        assert!(result.result.is_success());
     }
 
     // ── ToolError individual variant tests (migrated from uncarve) ──
@@ -1575,8 +1619,8 @@ mod tests {
                 &self,
                 args: EchoArgs,
                 _ctx: &ToolCallContext,
-            ) -> Result<ToolResult, ToolError> {
-                Ok(ToolResult::success("echo", json!({ "echo": args.message })))
+            ) -> Result<ToolOutput, ToolError> {
+                Ok(ToolResult::success("echo", json!({ "echo": args.message })).into())
             }
         }
 
@@ -1612,8 +1656,8 @@ mod tests {
                 &self,
                 args: StrictArgs,
                 _ctx: &ToolCallContext,
-            ) -> Result<ToolResult, ToolError> {
-                Ok(ToolResult::success("strict", json!({ "name": args.name })))
+            ) -> Result<ToolOutput, ToolError> {
+                Ok(ToolResult::success("strict", json!({ "name": args.name })).into())
             }
         }
 
@@ -1638,11 +1682,8 @@ mod tests {
                 &self,
                 args: EchoArgs,
                 _ctx: &ToolCallContext,
-            ) -> Result<ToolResult, ToolError> {
-                Ok(ToolResult::success(
-                    "categorized",
-                    json!({ "echo": args.message }),
-                ))
+            ) -> Result<ToolOutput, ToolError> {
+                Ok(ToolResult::success("categorized", json!({ "echo": args.message })).into())
             }
         }
 
@@ -1675,8 +1716,8 @@ mod tests {
             )
             .await
             .unwrap();
-            assert!(result.is_success());
-            assert_eq!(result.data["echo"], "hello");
+            assert!(result.result.is_success());
+            assert_eq!(result.result.data["echo"], "hello");
         }
 
         #[tokio::test]
@@ -1720,8 +1761,8 @@ mod tests {
             )
             .await
             .unwrap();
-            assert!(result.is_success());
-            assert_eq!(result.data["name"], "Alice");
+            assert!(result.result.is_success());
+            assert_eq!(result.result.data["name"], "Alice");
         }
 
         #[test]
@@ -1798,6 +1839,98 @@ mod tests {
             // Should not panic
             ctx.stream_output("data").await;
         }
+    }
+
+    // ── FrontEndTool tests ──
+
+    #[tokio::test]
+    async fn frontend_tool_execute_returns_pending_status() {
+        let desc = ToolDescriptor::new("ui_confirm", "UI Confirm", "Confirm dialog");
+        let tool = FrontEndTool::new(desc);
+        let mut ctx = ToolCallContext::test_default();
+        ctx.call_id = "call-fe-1".into();
+        let output = tool.execute(json!({"prompt": "ok?"}), &ctx).await.unwrap();
+        assert!(output.result.is_pending());
+        assert!(!output.result.is_success());
+        assert!(!output.result.is_error());
+    }
+
+    #[tokio::test]
+    async fn frontend_tool_result_has_use_decision_as_tool_result_mode() {
+        use crate::contract::suspension::ToolCallResumeMode;
+
+        let desc = ToolDescriptor::new("ui_confirm", "UI Confirm", "Confirm dialog");
+        let tool = FrontEndTool::new(desc);
+        let mut ctx = ToolCallContext::test_default();
+        ctx.call_id = "call-fe-2".into();
+        let output = tool.execute(json!({"msg": "hi"}), &ctx).await.unwrap();
+        let ticket = output
+            .result
+            .suspension
+            .expect("should have suspension ticket");
+        assert_eq!(
+            ticket.resume_mode,
+            ToolCallResumeMode::UseDecisionAsToolResult
+        );
+    }
+
+    #[tokio::test]
+    async fn frontend_tool_suspension_ticket_contains_original_args() {
+        let desc = ToolDescriptor::new("ui_form", "UI Form", "Form input");
+        let tool = FrontEndTool::new(desc);
+        let mut ctx = ToolCallContext::test_default();
+        ctx.call_id = "call-fe-3".into();
+        let args = json!({"field": "value", "count": 42});
+        let output = tool.execute(args.clone(), &ctx).await.unwrap();
+        let ticket = output
+            .result
+            .suspension
+            .expect("should have suspension ticket");
+        assert_eq!(ticket.suspension.parameters, args);
+    }
+
+    #[tokio::test]
+    async fn frontend_tool_command_is_empty() {
+        let desc = ToolDescriptor::new("ui_confirm", "UI Confirm", "Confirm dialog");
+        let tool = FrontEndTool::new(desc);
+        let mut ctx = ToolCallContext::test_default();
+        ctx.call_id = "call-fe-4".into();
+        let output = tool.execute(json!({}), &ctx).await.unwrap();
+        assert!(
+            output.command.is_empty(),
+            "FrontEndTool should not produce side-effects"
+        );
+    }
+
+    #[test]
+    fn frontend_tool_descriptor_matches_provided() {
+        let desc = ToolDescriptor::new("custom_ui", "Custom UI", "Custom frontend tool")
+            .with_parameters(json!({"type": "object", "properties": {"x": {"type": "string"}}}))
+            .with_category("ui");
+        let tool = FrontEndTool::new(desc.clone());
+        let got = tool.descriptor();
+        assert_eq!(got.id, "custom_ui");
+        assert_eq!(got.name, "Custom UI");
+        assert_eq!(got.description, "Custom frontend tool");
+        assert_eq!(got.parameters, desc.parameters);
+        assert_eq!(got.category, Some("ui".to_string()));
+    }
+
+    #[tokio::test]
+    async fn frontend_tool_with_empty_args_still_suspends() {
+        let desc = ToolDescriptor::new("ui_noop", "UI Noop", "No-op frontend tool");
+        let tool = FrontEndTool::new(desc);
+        let mut ctx = ToolCallContext::test_default();
+        ctx.call_id = "call-fe-5".into();
+        let output = tool.execute(json!({}), &ctx).await.unwrap();
+        assert!(output.result.is_pending());
+        let ticket = output
+            .result
+            .suspension
+            .expect("should have suspension ticket");
+        assert_eq!(ticket.suspension.parameters, json!({}));
+        assert_eq!(ticket.suspension.id, "call-fe-5");
+        assert_eq!(ticket.suspension.action, "tool:ui_noop");
     }
 
     mod tool_validation_error_tests {

@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use awaken_contract::contract::event_sink::{EventSink, NullEventSink};
 use awaken_contract::contract::tool::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 
 use crate::registry::AgentResolver;
@@ -101,7 +101,7 @@ impl Tool for AgentTool {
         Ok(())
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let prompt = args
             .get("prompt")
             .and_then(Value::as_str)
@@ -153,9 +153,9 @@ impl Tool for AgentTool {
                         serde_json::Value::String(child_run_id.clone()),
                     );
                 }
-                Ok(tool_result)
+                Ok(tool_result.into())
             }
-            Err(e) => Ok(ToolResult::error(&tool_id, e.to_string())),
+            Err(e) => Ok(ToolResult::error(&tool_id, e.to_string()).into()),
         }
     }
 }

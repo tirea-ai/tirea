@@ -498,7 +498,7 @@ async fn registry_discovers_tools_and_executes_calls() {
         .execute(serde_json::json!({"a": 1}), &ctx)
         .await
         .unwrap();
-    assert!(res.is_success());
+    assert!(res.result.is_success());
 
     let calls = fake.calls.lock().unwrap();
     assert_eq!(calls.len(), 1);
@@ -701,7 +701,7 @@ async fn mcp_tool_forwards_progress_to_activity_reports() {
 
     let ctx = ToolCallContext::test_default();
     let result = tool.execute(json!({}), &ctx).await.unwrap();
-    assert!(result.is_success());
+    assert!(result.result.is_success());
     // Progress events are reported via activity_sink; with test_default (no sink),
     // this just verifies the progress handling doesn't cause errors.
 }
@@ -731,14 +731,14 @@ async fn structured_mcp_results_are_preserved_in_tool_output() {
 
     let ctx = ToolCallContext::test_default();
     let result = tool.execute(json!({}), &ctx).await.expect("tool result");
-    assert!(result.is_success());
+    assert!(result.result.is_success());
 
     // Structured content should be preserved in result.metadata
     assert_eq!(
-        result.metadata["mcp.result.structuredContent"]["sum"],
+        result.result.metadata["mcp.result.structuredContent"]["sum"],
         json!(3)
     );
-    assert!(result.metadata["mcp.result.content"].is_array());
+    assert!(result.result.metadata["mcp.result.content"].is_array());
 }
 
 #[tokio::test]
@@ -1144,14 +1144,17 @@ async fn mcp_tool_execute_fetches_ui_resource() {
     let ctx = ToolCallContext::test_default();
     let result = tool.execute(json!({}), &ctx).await.unwrap();
 
-    assert!(result.is_success());
+    assert!(result.result.is_success());
     assert_eq!(
-        result.metadata["mcp.ui.content"],
+        result.result.metadata["mcp.ui.content"],
         json!("<html>chart</html>")
     );
-    assert_eq!(result.metadata["mcp.ui.mimeType"], json!("text/html"));
     assert_eq!(
-        result.metadata["mcp.ui.resourceUri"],
+        result.result.metadata["mcp.ui.mimeType"],
+        json!("text/html")
+    );
+    assert_eq!(
+        result.result.metadata["mcp.ui.resourceUri"],
         json!("ui://chart/render")
     );
 }
@@ -1179,9 +1182,9 @@ async fn mcp_tool_execute_ui_fetch_failure_non_fatal() {
     let ctx = ToolCallContext::test_default();
     let result = tool.execute(json!({}), &ctx).await.unwrap();
 
-    assert!(result.is_success());
+    assert!(result.result.is_success());
     // UI content should not be present when fetch fails
-    assert!(result.metadata.get("mcp.ui.content").is_none());
+    assert!(result.result.metadata.get("mcp.ui.content").is_none());
 }
 
 #[tokio::test]
@@ -1202,7 +1205,7 @@ async fn mcp_tool_without_ui_meta_has_no_ui_uri_in_result() {
 
     let ctx = ToolCallContext::test_default();
     let result = tool.execute(json!({}), &ctx).await.unwrap();
-    assert!(result.metadata.get("mcp.ui.resourceUri").is_none());
+    assert!(result.result.metadata.get("mcp.ui.resourceUri").is_none());
 }
 
 // ── Sampling handler tests ──
@@ -1289,6 +1292,165 @@ async fn failing_sampling_handler_returns_error() {
         .await
         .expect_err("handler should fail");
     assert!(err.to_string().contains("LLM unavailable"));
+}
+
+// ── McpTool descriptor and execution edge-case tests ──
+
+#[tokio::test]
+async fn mcp_tool_descriptor_contains_correct_id_and_name_from_definition() {
+    let def = McpToolDefinition::new("my_func").with_title("My Function");
+    let transport = Arc::new(FakeTransport::new(vec![def])) as Arc<dyn McpToolTransport>;
+
+    let manager = McpToolRegistryManager::from_transports([(cfg("srv"), transport)])
+        .await
+        .unwrap();
+    let reg = manager.registry();
+    let tool_id = reg
+        .ids()
+        .into_iter()
+        .find(|id| id.contains("my_func"))
+        .expect("my_func tool should be discovered");
+    let tool = reg.get(&tool_id).unwrap();
+
+    let desc = tool.descriptor();
+    assert_eq!(desc.id, tool_id);
+    assert_eq!(desc.name, "My Function");
+    // When title is absent, name falls back to the MCP tool name
+    assert!(desc.description.contains("my_func") || !desc.description.is_empty());
+}
+
+#[tokio::test]
+async fn mcp_tool_descriptor_name_falls_back_to_tool_name_without_title() {
+    let def = McpToolDefinition::new("raw_name");
+    let transport = Arc::new(FakeTransport::new(vec![def])) as Arc<dyn McpToolTransport>;
+
+    let manager = McpToolRegistryManager::from_transports([(cfg("srv"), transport)])
+        .await
+        .unwrap();
+    let reg = manager.registry();
+    let tool_id = reg
+        .ids()
+        .into_iter()
+        .find(|id| id.contains("raw_name"))
+        .unwrap();
+    let tool = reg.get(&tool_id).unwrap();
+
+    let desc = tool.descriptor();
+    // Without a title, the descriptor name should fall back to the MCP tool name
+    assert_eq!(desc.name, "raw_name");
+}
+
+#[tokio::test]
+async fn mcp_tool_returns_error_for_transport_call_failure() {
+    #[derive(Debug, Clone)]
+    struct FailingCallTransport;
+
+    #[async_trait]
+    impl McpToolTransport for FailingCallTransport {
+        async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+            Ok(vec![McpToolDefinition::new("failing_tool")])
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _args: Value,
+            _progress_tx: Option<mpsc::UnboundedSender<McpProgressUpdate>>,
+        ) -> Result<CallToolResult, McpTransportError> {
+            Err(McpTransportError::TransportError(
+                "connection reset".to_string(),
+            ))
+        }
+
+        fn transport_type(&self) -> TransportTypeId {
+            TransportTypeId::Stdio
+        }
+    }
+
+    let transport = Arc::new(FailingCallTransport) as Arc<dyn McpToolTransport>;
+    let manager = McpToolRegistryManager::from_transports([(cfg("srv"), transport)])
+        .await
+        .unwrap();
+    let reg = manager.registry();
+    let tool_id = reg
+        .ids()
+        .into_iter()
+        .find(|id| id.contains("failing_tool"))
+        .unwrap();
+    let tool = reg.get(&tool_id).unwrap();
+
+    let ctx = ToolCallContext::test_default();
+    let err = tool
+        .execute(json!({}), &ctx)
+        .await
+        .expect_err("transport failure should propagate as ToolError");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("connection reset"),
+        "error should contain transport message, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn mcp_tool_result_metadata_contains_server_info() {
+    let transport = Arc::new(FakeTransport::new(vec![McpToolDefinition::new("echo")]))
+        as Arc<dyn McpToolTransport>;
+    let manager = McpToolRegistryManager::from_transports([(cfg("my_server"), transport)])
+        .await
+        .unwrap();
+    let reg = manager.registry();
+    let tool_id = reg
+        .ids()
+        .into_iter()
+        .find(|id| id.contains("echo"))
+        .unwrap();
+    let tool = reg.get(&tool_id).unwrap();
+
+    let ctx = ToolCallContext::test_default();
+    let result = tool.execute(json!({}), &ctx).await.unwrap();
+
+    assert_eq!(
+        result
+            .result
+            .metadata
+            .get("mcp.server")
+            .and_then(|v| v.as_str()),
+        Some("my_server"),
+        "result metadata should contain the MCP server name"
+    );
+    assert_eq!(
+        result
+            .result
+            .metadata
+            .get("mcp.tool")
+            .and_then(|v| v.as_str()),
+        Some("echo"),
+        "result metadata should contain the MCP tool name"
+    );
+}
+
+#[tokio::test]
+async fn mcp_tool_command_is_empty() {
+    let transport = Arc::new(FakeTransport::new(vec![McpToolDefinition::new("echo")]))
+        as Arc<dyn McpToolTransport>;
+    let manager = McpToolRegistryManager::from_transports([(cfg("srv"), transport)])
+        .await
+        .unwrap();
+    let reg = manager.registry();
+    let tool_id = reg
+        .ids()
+        .into_iter()
+        .find(|id| id.contains("echo"))
+        .unwrap();
+    let tool = reg.get(&tool_id).unwrap();
+
+    let ctx = ToolCallContext::test_default();
+    let result = tool.execute(json!({}), &ctx).await.unwrap();
+
+    assert!(
+        result.command.is_empty(),
+        "MCP tools are passive wrappers and should produce an empty command"
+    );
 }
 
 // ── HTTP transport integration tests ──
@@ -1382,7 +1544,7 @@ async fn connect_http_registry_discovers_tools_and_executes() {
         .await
         .unwrap();
     server.abort();
-    assert!(result.is_success());
+    assert!(result.result.is_success());
 }
 
 #[tokio::test]
@@ -1478,7 +1640,7 @@ async fn http_call_tool_preserves_structured_content() {
     server.abort();
 
     assert_eq!(
-        result.metadata["mcp.result.structuredContent"]["sum"],
+        result.result.metadata["mcp.result.structuredContent"]["sum"],
         json!(3)
     );
 }
@@ -1724,8 +1886,8 @@ async fn plain_text_result_becomes_string_data() {
     let ctx = ToolCallContext::test_default();
     let result = tool.execute(json!({}), &ctx).await.unwrap();
     // Plain text "ok" is stored directly as a string in data (no wrapping)
-    assert_eq!(result.data, json!("ok"));
-    assert!(result.metadata["mcp.server"].is_string());
+    assert_eq!(result.result.data, json!("ok"));
+    assert!(result.result.metadata["mcp.server"].is_string());
 }
 
 // ── Error variant tests ──

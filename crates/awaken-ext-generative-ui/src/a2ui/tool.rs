@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use awaken_contract::contract::tool::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 use awaken_contract::validate_against_schema;
 
@@ -298,7 +298,7 @@ impl Tool for A2uiRenderTool {
         }
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let args = normalize_args(&args);
         let messages = extract_messages(&args);
 
@@ -311,6 +311,7 @@ impl Tool for A2uiRenderTool {
         Ok(ToolResult::success(
             A2UI_TOOL_NAME,
             json!({ "rendered": true, "count": messages.len() }),
-        ))
+        )
+        .into())
     }
 }

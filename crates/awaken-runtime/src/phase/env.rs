@@ -210,7 +210,7 @@ mod tests {
     use awaken_contract::StateError;
     use awaken_contract::contract::message::Message;
     use awaken_contract::contract::tool::{
-        Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
+        Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
     };
     use awaken_contract::contract::transform::{InferenceRequestTransform, TransformOutput};
     use awaken_contract::model::Phase;
@@ -240,8 +240,8 @@ mod tests {
             &self,
             _args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::success(&self.0, Value::Null))
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolResult::success(&self.0, Value::Null).into())
         }
     }
 

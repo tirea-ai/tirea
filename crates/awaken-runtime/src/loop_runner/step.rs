@@ -373,14 +373,19 @@ async fn intercept_tool_call(
     Ok(resolve_intercept_payloads(intercept_payloads))
 }
 
-/// Build a StateCommand for a completed tool call (lifecycle + AfterToolExecute).
+/// Build a StateCommand for a completed tool call.
+///
+/// Merges three sources of actions into a single command:
+/// 1. Lifecycle state update (ToolCallStates)
+/// 2. Tool's own side-effects (returned via `ToolOutput.command`)
+/// 3. AfterToolExecute plugin hook commands
 ///
 /// Pure state construction — no side effects (no events, no messages, no commit).
-/// Follows the same collect → merge pattern as plugin hooks.
 async fn build_tool_state_command(
     ctx: &mut StepContext<'_>,
     call: &ToolCall,
     tool_result: &awaken_contract::contract::tool::ToolResult,
+    tool_command: StateCommand,
     outcome: ToolCallOutcome,
 ) -> Result<StateCommand, AgentLoopError> {
     let store = ctx.runtime.store();
@@ -404,6 +409,11 @@ async fn build_tool_state_command(
         updated_at: now_ms(),
         resume_mode,
     });
+
+    // Merge tool's own side-effects (same mechanism as plugin hooks)
+    if !tool_command.is_empty() {
+        cmd.extend(tool_command)?;
+    }
 
     // Collect AfterToolExecute hook commands (same as plugin gather)
     let after_ctx = make_ctx(
@@ -473,9 +483,10 @@ async fn complete_tool_call(
     ctx: &mut StepContext<'_>,
     call: &ToolCall,
     tool_result: &awaken_contract::contract::tool::ToolResult,
+    tool_command: StateCommand,
     outcome: ToolCallOutcome,
 ) -> Result<(), AgentLoopError> {
-    let cmd = build_tool_state_command(ctx, call, tool_result, outcome).await?;
+    let cmd = build_tool_state_command(ctx, call, tool_result, tool_command, outcome).await?;
     emit_tool_completion(ctx, call, tool_result, outcome).await;
     ctx.runtime.submit_command(&ctx.agent.env, cmd).await?;
     Ok(())
@@ -547,8 +558,14 @@ async fn execute_tools_with_interception(
             Some(ToolInterceptPayload::Block { reason }) => {
                 let result =
                     awaken_contract::contract::tool::ToolResult::error(&call.name, &reason);
-                let cmd =
-                    build_tool_state_command(ctx, call, &result, ToolCallOutcome::Failed).await?;
+                let cmd = build_tool_state_command(
+                    ctx,
+                    call,
+                    &result,
+                    StateCommand::new(),
+                    ToolCallOutcome::Failed,
+                )
+                .await?;
                 ctx.runtime.submit_command(&ctx.agent.env, cmd).await?;
                 emit_tool_completion(ctx, call, &result, ToolCallOutcome::Failed).await;
                 return Ok((Some(reason), suspended));
@@ -562,7 +579,7 @@ async fn execute_tools_with_interception(
             }
             Some(ToolInterceptPayload::SetResult(result)) => {
                 let outcome = ToolCallOutcome::from_tool_result(&result);
-                complete_tool_call(ctx, call, &result, outcome).await?;
+                complete_tool_call(ctx, call, &result, StateCommand::new(), outcome).await?;
                 if outcome == ToolCallOutcome::Suspended {
                     suspended = true;
                 }
@@ -596,25 +613,27 @@ async fn execute_tools_with_interception(
             tool_ctx.tool_name = call.name.clone();
             tool_ctx.snapshot = store.snapshot();
 
-            let batch = ctx
+            let mut batch = ctx
                 .agent
                 .tool_executor
                 .execute(&ctx.agent.tools, std::slice::from_ref(call), &tool_ctx)
                 .await
                 .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
-            let Some(exec_result) = batch.first() else {
+            let Some(exec_result) = batch.pop() else {
                 continue;
             };
 
+            let outcome = exec_result.outcome;
             complete_tool_call(
                 ctx,
                 &exec_result.call,
                 &exec_result.result,
-                exec_result.outcome,
+                exec_result.command,
+                outcome,
             )
             .await?;
 
-            if exec_result.outcome == ToolCallOutcome::Suspended {
+            if outcome == ToolCallOutcome::Suspended {
                 suspended = true;
                 break;
             }
@@ -628,15 +647,17 @@ async fn execute_tools_with_interception(
             .await
             .map_err(|e| AgentLoopError::InferenceFailed(e.to_string()))?;
 
-        for exec_result in &exec_results {
+        for exec_result in exec_results {
+            let outcome = exec_result.outcome;
             complete_tool_call(
                 ctx,
                 &exec_result.call,
                 &exec_result.result,
-                exec_result.outcome,
+                exec_result.command,
+                outcome,
             )
             .await?;
-            if exec_result.outcome == ToolCallOutcome::Suspended {
+            if outcome == ToolCallOutcome::Suspended {
                 suspended = true;
             }
         }

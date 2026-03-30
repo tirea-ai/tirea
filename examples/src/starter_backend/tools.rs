@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 
 use awaken_contract::contract::progress::ProgressStatus;
 use awaken_contract::contract::tool::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 
 pub struct GetWeatherTool;
@@ -25,7 +25,7 @@ impl Tool for GetWeatherTool {
         }))
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let location = args["location"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'location'".into()))?;
@@ -38,7 +38,8 @@ impl Tool for GetWeatherTool {
                 "condition": "Sunny",
                 "humidity_pct": 45
             }),
-        ))
+        )
+        .into())
     }
 }
 
@@ -61,7 +62,7 @@ impl Tool for GetStockPriceTool {
         }))
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let symbol = args["symbol"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'symbol'".into()))?
@@ -81,7 +82,8 @@ impl Tool for GetStockPriceTool {
                 "price_usd": price,
                 "source": "starter-demo"
             }),
-        ))
+        )
+        .into())
     }
 }
 
@@ -104,7 +106,7 @@ impl Tool for AppendNoteTool {
         }))
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let note = args["note"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'note'".into()))?
@@ -121,7 +123,8 @@ impl Tool for AppendNoteTool {
                 "added": note,
                 "count": 1
             }),
-        ))
+        )
+        .into())
     }
 }
 
@@ -153,7 +156,7 @@ impl Tool for ServerInfoTool {
         }))
     }
 
-    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -161,7 +164,8 @@ impl Tool for ServerInfoTool {
         Ok(ToolResult::success(
             "serverInfo",
             json!({ "name": self.service_name, "timestamp": ts }),
-        ))
+        )
+        .into())
     }
 }
 
@@ -183,7 +187,7 @@ impl Tool for FailingTool {
         }))
     }
 
-    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         Err(ToolError::ExecutionFailed(
             "Intentional failingTool error for e2e validation".to_string(),
         ))
@@ -209,15 +213,12 @@ impl Tool for FinishTool {
         }))
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let summary = args
             .get("summary")
             .and_then(Value::as_str)
             .unwrap_or("done");
-        Ok(ToolResult::success(
-            "finish",
-            json!({ "status": "done", "summary": summary }),
-        ))
+        Ok(ToolResult::success("finish", json!({ "status": "done", "summary": summary })).into())
     }
 }
 
@@ -246,7 +247,7 @@ impl Tool for ProgressDemoTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let scenario = args["scenario"].as_str().unwrap_or("default");
 
         match scenario {
@@ -280,7 +281,8 @@ impl Tool for ProgressDemoTool {
                 Ok(ToolResult::success(
                     "progress_demo",
                     json!({ "scenario": "data_pipeline", "records_processed": 500, "status": "ok" }),
-                ))
+                )
+                .into())
             }
             "deploy" => {
                 let phases = [
@@ -328,7 +330,8 @@ impl Tool for ProgressDemoTool {
                 Ok(ToolResult::success(
                     "progress_demo",
                     json!({ "scenario": "deploy", "version": "v2.4.1", "pods": 3, "status": "ok" }),
-                ))
+                )
+                .into())
             }
             "slow_build" => {
                 let total_steps = 20u32;
@@ -359,7 +362,8 @@ impl Tool for ProgressDemoTool {
                 Ok(ToolResult::success(
                     "progress_demo",
                     json!({ "scenario": "slow_build", "crates_compiled": total_steps, "status": "ok" }),
-                ))
+                )
+                .into())
             }
             "multi_phase" => {
                 let phases: &[(&str, &[(f64, &str)])] = &[
@@ -408,7 +412,8 @@ impl Tool for ProgressDemoTool {
                 Ok(ToolResult::success(
                     "progress_demo",
                     json!({ "scenario": "multi_phase", "phases": 3, "status": "ok" }),
-                ))
+                )
+                .into())
             }
             _ => {
                 let steps = 10u32;
@@ -433,7 +438,8 @@ impl Tool for ProgressDemoTool {
                 Ok(ToolResult::success(
                     "progress_demo",
                     json!({ "scenario": "default", "steps": steps, "status": "ok" }),
-                ))
+                )
+                .into())
             }
         }
     }
@@ -458,11 +464,12 @@ impl Tool for AskUserQuestionTool {
         }))
     }
 
-    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         Ok(ToolResult::error(
             "askUserQuestion",
             "frontend tool should be intercepted before backend execution",
-        ))
+        )
+        .into())
     }
 }
 
@@ -489,10 +496,11 @@ impl Tool for SetBackgroundColorTool {
         }))
     }
 
-    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         Ok(ToolResult::error(
             "set_background_color",
             "frontend tool should be intercepted before backend execution",
-        ))
+        )
+        .into())
     }
 }

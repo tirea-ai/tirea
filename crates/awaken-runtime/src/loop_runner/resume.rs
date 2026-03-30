@@ -18,6 +18,7 @@ use futures::channel::mpsc::UnboundedReceiver;
 use super::{AgentLoopError, commit_update, now_ms, tool_result_to_content};
 use crate::agent::state::{ToolCallStates, ToolCallStatesUpdate};
 use crate::registry::ResolvedAgent;
+use crate::state::StateCommand;
 
 pub(super) enum WaitOutcome {
     Resumed,
@@ -143,29 +144,36 @@ pub(super) async fn detect_and_replay_resume(
         let mut tool_ctx = resume_tool_ctx.clone();
         tool_ctx.call_id = call_id.to_string();
         tool_ctx.tool_name = call_state.tool_name.clone();
-        let result =
+        let output =
             crate::execution::executor::execute_single_tool(&agent.tools, &call, &tool_ctx).await;
 
-        let status = if result.is_success() {
+        let status = if output.result.is_success() {
             ToolCallStatus::Succeeded
         } else {
             ToolCallStatus::Failed
         };
-        commit_update::<ToolCallStates>(
-            store,
-            ToolCallStatesUpdate::Upsert {
-                call_id: call_id.clone(),
-                tool_name: call_state.tool_name.clone(),
-                arguments: call_state.arguments.clone(),
-                status,
-                updated_at: now_ms(),
-                resume_mode: call_state.resume_mode,
-            },
-        )?;
+
+        // Merge tool command + lifecycle update
+        let mut cmd = StateCommand::new();
+        cmd.update::<ToolCallStates>(ToolCallStatesUpdate::Upsert {
+            call_id: call_id.clone(),
+            tool_name: call_state.tool_name.clone(),
+            arguments: call_state.arguments.clone(),
+            status,
+            updated_at: now_ms(),
+            resume_mode: call_state.resume_mode,
+        });
+        if !output.command.is_empty() {
+            cmd.extend(output.command)
+                .map_err(|e| AgentLoopError::PhaseError(e))?;
+        }
+        store
+            .commit(cmd.patch)
+            .map_err(|e| AgentLoopError::PhaseError(e))?;
 
         messages.push(Arc::new(Message::tool(
             call_id,
-            tool_result_to_content(&result),
+            tool_result_to_content(&output.result),
         )));
     }
 

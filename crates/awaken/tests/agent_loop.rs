@@ -15,7 +15,9 @@ use awaken::contract::message::{Message, ToolCall};
 use awaken::contract::suspension::{
     ResumeDecisionAction, ToolCallResume, ToolCallResumeMode, ToolCallStatus,
 };
-use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult};
+use awaken::contract::tool::{
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
+};
 use awaken::contract::tool_intercept::{ToolInterceptAction, ToolInterceptPayload};
 use awaken::loop_runner::{AgentLoopParams, build_agent_env, prepare_resume, run_agent_loop};
 use awaken::*;
@@ -76,13 +78,13 @@ impl Tool for EchoTool {
         ToolDescriptor::new("echo", "echo", "Echoes input back")
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let msg = args
             .get("message")
             .and_then(|v| v.as_str())
             .unwrap_or("no message")
             .to_string();
-        Ok(ToolResult::success_with_message("echo", args, msg))
+        Ok(ToolResult::success_with_message("echo", args, msg).into())
     }
 }
 
@@ -94,9 +96,9 @@ impl Tool for CalcTool {
         ToolDescriptor::new("calc", "calculator", "Evaluates math")
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let result = args.get("result").cloned().unwrap_or(json!(0));
-        Ok(ToolResult::success("calc", result))
+        Ok(ToolResult::success("calc", result).into())
     }
 }
 
@@ -108,7 +110,7 @@ impl Tool for FailingTool {
         ToolDescriptor::new("fail", "fail", "Always fails")
     }
 
-    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         Err(ToolError::ExecutionFailed("intentional failure".into()))
     }
 }
@@ -122,8 +124,8 @@ impl Tool for SuspendingTool {
         ToolDescriptor::new("dangerous", "dangerous", "Requires approval")
     }
 
-    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
-        Ok(ToolResult::suspended("dangerous", "needs user approval"))
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        Ok(ToolResult::suspended("dangerous", "needs user approval").into())
     }
 }
 
@@ -136,8 +138,8 @@ impl Tool for PassthroughTool {
         ToolDescriptor::new("passthrough", "passthrough", "Returns args as result")
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
-        Ok(ToolResult::success("passthrough", args))
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        Ok(ToolResult::success("passthrough", args).into())
     }
 }
 
@@ -1099,8 +1101,8 @@ async fn resume_with_replay_tool_call() {
             &self,
             args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::success("dangerous", args))
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolResult::success("dangerous", args).into())
         }
     }
 
@@ -1231,8 +1233,8 @@ async fn resume_with_pass_decision_to_tool() {
             &self,
             args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::success("dangerous", args))
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolResult::success("dangerous", args).into())
         }
     }
 
@@ -1767,8 +1769,8 @@ async fn frontend_tool_intercept_suspend_and_resume() {
             &self,
             args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::success("ask_user", args))
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolResult::success("ask_user", args).into())
         }
     }
 
@@ -2050,14 +2052,14 @@ async fn tool_intercept_set_result_skips_execution() {
             &self,
             args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
+        ) -> Result<ToolOutput, ToolError> {
             *self.0.lock().unwrap() = true;
             let msg = args
                 .get("message")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            Ok(ToolResult::success_with_message("echo", args, msg))
+            Ok(ToolResult::success_with_message("echo", args, msg).into())
         }
     }
 
@@ -2234,8 +2236,8 @@ async fn decision_channel_resume_resolves_suspended_call() {
             &self,
             _args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::suspended("dangerous", "needs user approval"))
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolResult::suspended("dangerous", "needs user approval").into())
         }
     }
 
@@ -2431,8 +2433,8 @@ async fn intercept_suspend_preserves_ticket_resume_mode() {
             &self,
             args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::success("ask_user", args))
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolResult::success("ask_user", args).into())
         }
     }
 
@@ -3262,9 +3264,9 @@ async fn cancel_during_tool_execution() {
             &self,
             _args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
+        ) -> Result<ToolOutput, ToolError> {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            Ok(ToolResult::success("slow", json!({"done": true})))
+            Ok(ToolResult::success("slow", json!({"done": true})).into())
         }
     }
 
@@ -3493,8 +3495,8 @@ async fn tool_execution_preserves_arguments() {
             &self,
             args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::success("arg_echo", args))
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolResult::success("arg_echo", args).into())
         }
     }
 
@@ -4317,9 +4319,9 @@ async fn after_inference_stop_prevents_tool_execution() {
             &self,
             _args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
+        ) -> Result<ToolOutput, ToolError> {
             *self.0.lock().unwrap() = true;
-            Ok(ToolResult::success("tracked", json!({"done": true})))
+            Ok(ToolResult::success("tracked", json!({"done": true})).into())
         }
     }
 
@@ -4541,14 +4543,14 @@ async fn permission_denied_does_not_replay_tool() {
             &self,
             args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
+        ) -> Result<ToolOutput, ToolError> {
             *self.0.lock().unwrap() += 1;
             let msg = args
                 .get("message")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            Ok(ToolResult::success_with_message("echo", args, msg))
+            Ok(ToolResult::success_with_message("echo", args, msg).into())
         }
     }
 
@@ -5852,9 +5854,9 @@ async fn set_result_intercept_on_specific_tool_only() {
             &self,
             args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
+        ) -> Result<ToolOutput, ToolError> {
             self.0.lock().unwrap().push("calc".into());
-            Ok(ToolResult::success("calc", args))
+            Ok(ToolResult::success("calc", args).into())
         }
     }
 
@@ -5868,14 +5870,14 @@ async fn set_result_intercept_on_specific_tool_only() {
             &self,
             args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
+        ) -> Result<ToolOutput, ToolError> {
             self.0.lock().unwrap().push("echo".into());
             let msg = args
                 .get("message")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            Ok(ToolResult::success_with_message("echo", args, msg))
+            Ok(ToolResult::success_with_message("echo", args, msg).into())
         }
     }
 
@@ -6475,9 +6477,9 @@ async fn second_tool_not_executed_after_first_suspends() {
             &self,
             args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
+        ) -> Result<ToolOutput, ToolError> {
             self.0.lock().unwrap().push("echo".into());
-            Ok(ToolResult::success("echo", args))
+            Ok(ToolResult::success("echo", args).into())
         }
     }
 
@@ -8989,9 +8991,9 @@ async fn replay_tool_call_executes_original_tool() {
             &self,
             args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
+        ) -> Result<ToolOutput, ToolError> {
             self.0.lock().unwrap().push(args.clone());
-            Ok(ToolResult::success("dangerous", args))
+            Ok(ToolResult::success("dangerous", args).into())
         }
     }
 

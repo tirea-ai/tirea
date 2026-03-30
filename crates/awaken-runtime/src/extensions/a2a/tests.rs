@@ -148,15 +148,15 @@ async fn agent_tool_execute_runs_sub_agent() {
     let tool = AgentTool::local("worker", "desc", resolver);
     let ctx = ToolCallContext::test_default();
 
-    let result = tool
+    let output = tool
         .execute(json!({"prompt": "do work"}), &ctx)
         .await
         .unwrap();
 
-    assert!(result.is_success());
-    assert_eq!(result.data["agent_id"], "worker");
-    assert!(result.data["status"].as_str().is_some());
-    assert!(result.data["steps"].as_u64().is_some());
+    assert!(output.result.is_success());
+    assert_eq!(output.result.data["agent_id"], "worker");
+    assert!(output.result.data["status"].as_str().is_some());
+    assert!(output.result.data["steps"].as_u64().is_some());
 }
 
 #[tokio::test]
@@ -166,11 +166,11 @@ async fn agent_tool_execute_fails_for_missing_agent() {
     let ctx = ToolCallContext::test_default();
 
     // Backend error is returned as ToolResult::error (not ToolError)
-    let result = tool
+    let output = tool
         .execute(json!({"prompt": "do work"}), &ctx)
         .await
         .unwrap();
-    assert!(!result.is_success());
+    assert!(!output.result.is_success());
 }
 
 #[tokio::test]
@@ -206,16 +206,16 @@ async fn agent_tool_with_mock_backend_success() {
     let tool = AgentTool::with_backend("helper", "A helper agent", backend);
     let ctx = ToolCallContext::test_default();
 
-    let result = tool
+    let output = tool
         .execute(json!({"prompt": "help me"}), &ctx)
         .await
         .unwrap();
 
-    assert!(result.is_success());
-    assert_eq!(result.data["agent_id"], "helper");
-    assert_eq!(result.data["status"], "completed");
-    assert_eq!(result.data["response"], "done!");
-    assert_eq!(result.data["steps"], 3);
+    assert!(output.result.is_success());
+    assert_eq!(output.result.data["agent_id"], "helper");
+    assert_eq!(output.result.data["status"], "completed");
+    assert_eq!(output.result.data["response"], "done!");
+    assert_eq!(output.result.data["steps"], 3);
 }
 
 #[tokio::test]
@@ -232,13 +232,18 @@ async fn agent_tool_with_mock_backend_failure() {
     let tool = AgentTool::with_backend("helper", "desc", backend);
     let ctx = ToolCallContext::test_default();
 
-    let result = tool
+    let output = tool
         .execute(json!({"prompt": "help me"}), &ctx)
         .await
         .unwrap();
 
-    assert!(result.is_success()); // ToolResult is success but status shows failure
-    assert!(result.data["status"].as_str().unwrap().contains("failed"));
+    assert!(output.result.is_success()); // ToolResult is success but status shows failure
+    assert!(
+        output.result.data["status"]
+            .as_str()
+            .unwrap()
+            .contains("failed")
+    );
 }
 
 #[tokio::test]
@@ -249,15 +254,16 @@ async fn agent_tool_with_failing_backend() {
     let tool = AgentTool::with_backend("helper", "desc", backend);
     let ctx = ToolCallContext::test_default();
 
-    let result = tool
+    let output = tool
         .execute(json!({"prompt": "help me"}), &ctx)
         .await
         .unwrap();
 
     // Backend errors are returned as ToolResult::error
-    assert!(!result.is_success());
+    assert!(!output.result.is_success());
     assert!(
-        result
+        output
+            .result
             .message
             .as_deref()
             .unwrap()
@@ -423,14 +429,14 @@ async fn agent_tool_result_structure() {
     let tool = AgentTool::local("analyst", "Data analyst", resolver);
     let ctx = ToolCallContext::test_default();
 
-    let result = tool
+    let output = tool
         .execute(json!({"prompt": "analyze data"}), &ctx)
         .await
         .unwrap();
 
-    assert!(result.is_success());
-    assert_eq!(result.data["agent_id"], "analyst");
-    assert!(result.data["response"].as_str().is_some());
+    assert!(output.result.is_success());
+    assert_eq!(output.result.data["agent_id"], "analyst");
+    assert!(output.result.data["response"].as_str().is_some());
 }
 
 // -- DelegateRunStatus display --
@@ -505,11 +511,11 @@ async fn agent_tool_propagates_parent_identity_to_backend() {
     );
     ctx.call_id = "tool-call-789".to_string();
 
-    let result = tool
+    let output = tool
         .execute(json!({"prompt": "do work"}), &ctx)
         .await
         .unwrap();
-    assert!(result.is_success());
+    assert!(output.result.is_success());
 
     // Verify the backend received the parent's run_id and tool_call_id
     let captured_run_id = backend.captured_parent_run_id.lock().unwrap().clone();
@@ -538,16 +544,16 @@ async fn local_backend_sets_sub_agent_identity() {
     );
     ctx.call_id = "tool-call-xyz".to_string();
 
-    let result = tool
+    let output = tool
         .execute(json!({"prompt": "sub-task"}), &ctx)
         .await
         .unwrap();
 
     // If the sub-agent identity was constructed correctly, the run completes
     // successfully (MockExecutor returns a response, LocalBackend maps it).
-    assert!(result.is_success());
-    assert_eq!(result.data["agent_id"], "sub-worker");
-    assert_eq!(result.data["status"], "completed");
+    assert!(output.result.is_success());
+    assert_eq!(output.result.data["agent_id"], "sub-worker");
+    assert_eq!(output.result.data["status"], "completed");
 }
 
 // -- AgentBackendError display --
@@ -580,16 +586,272 @@ async fn agent_tool_propagates_child_run_id_in_metadata() {
     let tool = AgentTool::with_backend("helper", "desc", backend);
     let ctx = ToolCallContext::test_default();
 
-    let result = tool
+    let output = tool
         .execute(json!({"prompt": "help me"}), &ctx)
         .await
         .unwrap();
 
-    assert!(result.is_success());
+    assert!(output.result.is_success());
     assert_eq!(
-        result.metadata.get("child_run_id").and_then(|v| v.as_str()),
+        output
+            .result
+            .metadata
+            .get("child_run_id")
+            .and_then(|v| v.as_str()),
         Some("child-run-123")
     );
+}
+
+// -- Cancelled status --
+
+#[tokio::test]
+async fn agent_tool_with_mock_backend_cancelled() {
+    let backend = Arc::new(MockBackend {
+        result: DelegateRunResult {
+            agent_id: "helper".into(),
+            status: DelegateRunStatus::Cancelled,
+            response: None,
+            steps: 2,
+            run_id: None,
+        },
+    });
+    let tool = AgentTool::with_backend("helper", "desc", backend);
+    let ctx = ToolCallContext::test_default();
+
+    let output = tool
+        .execute(json!({"prompt": "help me"}), &ctx)
+        .await
+        .unwrap();
+
+    assert!(output.result.is_success());
+    assert_eq!(output.result.data["status"], "cancelled");
+    assert_eq!(output.result.data["agent_id"], "helper");
+    assert_eq!(output.result.data["steps"], 2);
+    assert!(output.result.data["response"].is_null());
+}
+
+// -- Timeout status --
+
+#[tokio::test]
+async fn agent_tool_with_mock_backend_timeout() {
+    let backend = Arc::new(MockBackend {
+        result: DelegateRunResult {
+            agent_id: "helper".into(),
+            status: DelegateRunStatus::Timeout,
+            response: Some("partial".into()),
+            steps: 5,
+            run_id: None,
+        },
+    });
+    let tool = AgentTool::with_backend("helper", "desc", backend);
+    let ctx = ToolCallContext::test_default();
+
+    let output = tool
+        .execute(json!({"prompt": "help me"}), &ctx)
+        .await
+        .unwrap();
+
+    assert!(output.result.is_success());
+    assert_eq!(output.result.data["status"], "timeout");
+    assert_eq!(output.result.data["agent_id"], "helper");
+    assert_eq!(output.result.data["response"], "partial");
+    assert_eq!(output.result.data["steps"], 5);
+}
+
+// -- Failed status contains error info --
+
+#[tokio::test]
+async fn agent_tool_failed_status_contains_error_info() {
+    let backend = Arc::new(MockBackend {
+        result: DelegateRunResult {
+            agent_id: "helper".into(),
+            status: DelegateRunStatus::Failed("rate limit exceeded".into()),
+            response: None,
+            steps: 1,
+            run_id: None,
+        },
+    });
+    let tool = AgentTool::with_backend("helper", "desc", backend);
+    let ctx = ToolCallContext::test_default();
+
+    let output = tool
+        .execute(json!({"prompt": "help me"}), &ctx)
+        .await
+        .unwrap();
+
+    let status = output.result.data["status"].as_str().unwrap();
+    assert!(status.contains("failed"));
+    assert!(status.contains("rate limit exceeded"));
+}
+
+// -- validate_args with null and array inputs --
+
+#[test]
+fn agent_tool_validate_args_null_input() {
+    let resolver = Arc::new(MockResolver::with_agent("worker"));
+    let tool = AgentTool::local("worker", "desc", resolver);
+    assert!(tool.validate_args(&json!(null)).is_err());
+}
+
+#[test]
+fn agent_tool_validate_args_array_input() {
+    let resolver = Arc::new(MockResolver::with_agent("worker"));
+    let tool = AgentTool::local("worker", "desc", resolver);
+    assert!(tool.validate_args(&json!([1, 2, 3])).is_err());
+}
+
+#[test]
+fn agent_tool_validate_args_prompt_is_number() {
+    let resolver = Arc::new(MockResolver::with_agent("worker"));
+    let tool = AgentTool::local("worker", "desc", resolver);
+    assert!(tool.validate_args(&json!({"prompt": 3.14})).is_err());
+}
+
+#[test]
+fn agent_tool_validate_args_prompt_is_bool() {
+    let resolver = Arc::new(MockResolver::with_agent("worker"));
+    let tool = AgentTool::local("worker", "desc", resolver);
+    assert!(tool.validate_args(&json!({"prompt": true})).is_err());
+}
+
+#[test]
+fn agent_tool_validate_args_prompt_is_null() {
+    let resolver = Arc::new(MockResolver::with_agent("worker"));
+    let tool = AgentTool::local("worker", "desc", resolver);
+    assert!(tool.validate_args(&json!({"prompt": null})).is_err());
+}
+
+// -- Command is empty (no side-effects from delegation) --
+
+#[tokio::test]
+async fn agent_tool_command_is_empty() {
+    let backend = Arc::new(MockBackend {
+        result: DelegateRunResult {
+            agent_id: "helper".into(),
+            status: DelegateRunStatus::Completed,
+            response: Some("done".into()),
+            steps: 1,
+            run_id: None,
+        },
+    });
+    let tool = AgentTool::with_backend("helper", "desc", backend);
+    let ctx = ToolCallContext::test_default();
+
+    let output = tool
+        .execute(json!({"prompt": "help me"}), &ctx)
+        .await
+        .unwrap();
+
+    assert!(
+        output.command.is_empty(),
+        "AgentTool should produce no side-effect commands"
+    );
+}
+
+#[tokio::test]
+async fn agent_tool_command_is_empty_on_failure() {
+    let backend = Arc::new(FailingBackend {
+        error: "backend down".into(),
+    });
+    let tool = AgentTool::with_backend("helper", "desc", backend);
+    let ctx = ToolCallContext::test_default();
+
+    let output = tool
+        .execute(json!({"prompt": "help me"}), &ctx)
+        .await
+        .unwrap();
+
+    assert!(
+        output.command.is_empty(),
+        "AgentTool should produce no side-effect commands even on error"
+    );
+}
+
+// -- Result data structure has all expected fields --
+
+#[tokio::test]
+async fn agent_tool_result_data_has_all_fields() {
+    let backend = Arc::new(MockBackend {
+        result: DelegateRunResult {
+            agent_id: "analyst".into(),
+            status: DelegateRunStatus::Completed,
+            response: Some("analysis complete".into()),
+            steps: 7,
+            run_id: Some("child-456".into()),
+        },
+    });
+    let tool = AgentTool::with_backend("analyst", "Data analyst", backend);
+    let ctx = ToolCallContext::test_default();
+
+    let output = tool
+        .execute(json!({"prompt": "analyze data"}), &ctx)
+        .await
+        .unwrap();
+
+    let data = &output.result.data;
+    assert_eq!(data["agent_id"], "analyst");
+    assert_eq!(data["status"], "completed");
+    assert_eq!(data["response"], "analysis complete");
+    assert_eq!(data["steps"], 7);
+    // Metadata contains child_run_id
+    assert_eq!(
+        output
+            .result
+            .metadata
+            .get("child_run_id")
+            .and_then(|v| v.as_str()),
+        Some("child-456")
+    );
+}
+
+// -- Descriptor tool_id pattern --
+
+#[test]
+fn agent_tool_descriptor_tool_id_follows_pattern() {
+    let backend = Arc::new(MockBackend {
+        result: DelegateRunResult {
+            agent_id: "my-special-agent".into(),
+            status: DelegateRunStatus::Completed,
+            response: None,
+            steps: 0,
+            run_id: None,
+        },
+    });
+    let tool = AgentTool::with_backend("my-special-agent", "desc", backend);
+    let desc = tool.descriptor();
+    assert_eq!(desc.id, "agent_run_my-special-agent");
+    assert!(desc.id.starts_with("agent_run_"));
+}
+
+// -- Parent propagation with capturing backend --
+
+#[tokio::test]
+async fn agent_tool_propagates_run_id_and_call_id() {
+    use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
+
+    let backend = Arc::new(CapturingBackend::new());
+    let tool = AgentTool::with_backend("worker", "desc", backend.clone());
+
+    let mut ctx = ToolCallContext::test_default();
+    ctx.run_identity = RunIdentity::new(
+        "thread-abc".to_string(),
+        None,
+        "run-def".to_string(),
+        None,
+        "main-agent".to_string(),
+        RunOrigin::User,
+    );
+    ctx.call_id = "tc-ghi".to_string();
+
+    let _output = tool
+        .execute(json!({"prompt": "delegate"}), &ctx)
+        .await
+        .unwrap();
+
+    let run_id = backend.captured_parent_run_id.lock().unwrap().clone();
+    let call_id = backend.captured_parent_tool_call_id.lock().unwrap().clone();
+    assert_eq!(run_id.as_deref(), Some("run-def"));
+    assert_eq!(call_id.as_deref(), Some("tc-ghi"));
 }
 
 #[tokio::test]
@@ -606,11 +868,11 @@ async fn agent_tool_omits_child_run_id_when_none() {
     let tool = AgentTool::with_backend("helper", "desc", backend);
     let ctx = ToolCallContext::test_default();
 
-    let result = tool
+    let output = tool
         .execute(json!({"prompt": "help me"}), &ctx)
         .await
         .unwrap();
 
-    assert!(result.is_success());
-    assert!(result.metadata.get("child_run_id").is_none());
+    assert!(output.result.is_success());
+    assert!(output.result.metadata.get("child_run_id").is_none());
 }

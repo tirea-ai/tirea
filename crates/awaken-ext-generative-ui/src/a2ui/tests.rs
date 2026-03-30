@@ -423,9 +423,9 @@ async fn tool_execute_flat_args() {
     let args = json!({
         "beginRendering": {"surfaceId": "s1", "root": "root"}
     });
-    let result = tool.execute(args, &ctx).await.unwrap();
-    assert_eq!(result.data["rendered"], true);
-    assert_eq!(result.data["count"], 1);
+    let output = tool.execute(args, &ctx).await.unwrap();
+    assert_eq!(output.result.data["rendered"], true);
+    assert_eq!(output.result.data["count"], 1);
 }
 
 #[test]
@@ -453,10 +453,10 @@ async fn tool_execute_legacy_messages_array() {
         {"surfaceUpdate": {"surfaceId": "s1", "components": [{"id": "root", "component": {"Card": {"child": "content"}}}]}},
         {"beginRendering": {"surfaceId": "s1", "root": "root"}}
     ]});
-    let result = tool.execute(args, &ctx).await.unwrap();
-    assert_eq!(result.tool_name, A2UI_TOOL_NAME);
-    assert_eq!(result.data["rendered"], true);
-    assert_eq!(result.data["count"], 2);
+    let output = tool.execute(args, &ctx).await.unwrap();
+    assert_eq!(output.result.tool_name, A2UI_TOOL_NAME);
+    assert_eq!(output.result.data["rendered"], true);
+    assert_eq!(output.result.data["count"], 2);
 }
 
 #[test]
@@ -495,6 +495,55 @@ fn plugin_instructions_mention_all_message_types() {
     assert!(text.contains("dataModelUpdate"));
     assert!(text.contains("beginRendering"));
     assert!(text.contains("deleteSurface"));
+}
+
+// -- execute() edge-case tests -----------------------------------------------
+
+#[tokio::test]
+async fn tool_execute_empty_object_fails_validation() {
+    let tool = A2uiRenderTool::new();
+    let err = tool.validate_args(&json!({})).unwrap_err();
+    // Empty object has no message keys, so it should fail
+    assert!(err.to_string().contains("at least one"));
+}
+
+#[tokio::test]
+async fn tool_execute_multiple_message_types_in_single_call() {
+    let tool = A2uiRenderTool::new();
+    let ctx = ToolCallContext::test_default();
+    let args = json!({"messages": [
+        {"beginRendering": {"surfaceId": "s1", "root": "root"}},
+        {"surfaceUpdate": {
+            "surfaceId": "s1",
+            "components": [{"id": "root", "component": {"Card": {"child": "c"}}}]
+        }},
+        {"deleteSurface": {"surfaceId": "s2"}}
+    ]});
+    assert!(tool.validate_args(&args).is_ok());
+    let output = tool.execute(args, &ctx).await.unwrap();
+    assert_eq!(output.result.data["rendered"], true);
+    assert_eq!(output.result.data["count"], 3);
+}
+
+#[tokio::test]
+async fn tool_execute_returns_empty_command() {
+    let tool = A2uiRenderTool::new();
+    let ctx = ToolCallContext::test_default();
+    let args = json!({
+        "beginRendering": {"surfaceId": "s1", "root": "root"}
+    });
+    let output = tool.execute(args, &ctx).await.unwrap();
+    assert!(
+        output.command.is_empty(),
+        "A2UI render tool should not produce side-effects"
+    );
+}
+
+#[test]
+fn tool_descriptor_id_is_render_a2ui() {
+    let tool = A2uiRenderTool::new();
+    let desc = tool.descriptor();
+    assert_eq!(desc.id, "render_a2ui");
 }
 
 // -- normalize_args tests ---------------------------------------------------

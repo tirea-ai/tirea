@@ -257,7 +257,9 @@ mod tests {
     use async_trait::async_trait;
     use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
     use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
-    use awaken_contract::contract::tool::{ToolCallContext, ToolDescriptor, ToolError, ToolResult};
+    use awaken_contract::contract::tool::{
+        ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
+    };
     use serde_json::Value;
 
     struct MockTool {
@@ -274,8 +276,8 @@ mod tests {
             &self,
             _args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::success(&self.id, Value::Null))
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolResult::success(&self.id, Value::Null).into())
         }
     }
 

@@ -14,7 +14,9 @@ use awaken::contract::event::AgentEvent;
 use awaken::contract::event_sink::EventSink;
 use awaken::contract::identity::{RunIdentity, RunOrigin};
 use awaken::contract::message::Message;
-use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult};
+use awaken::contract::tool::{
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
+};
 use awaken::engine::GenaiExecutor;
 use awaken::ext_permission::{PermissionAction, PermissionPlugin, PermissionPolicyKey};
 use awaken::loop_runner::{AgentLoopParams, LoopStatePlugin, build_agent_env, run_agent_loop};
@@ -51,14 +53,15 @@ impl Tool for CalculatorTool {
         }))
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let expr = args["expression"].as_str().unwrap_or("0");
         // Simple eval: just echo back, real eval not needed for this test
         Ok(ToolResult::success_with_message(
             "calculator",
             json!({ "expression": expr, "result": "5754" }),
             format!("Result: 5754"),
-        ))
+        )
+        .into())
     }
 }
 
@@ -87,13 +90,10 @@ impl Tool for DangerousTool {
         }))
     }
 
-    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         self.call_count.fetch_add(1, Ordering::SeqCst);
         eprintln!("❌ ERROR: dangerous_delete was called! Permission filter failed!");
-        Ok(ToolResult::success(
-            "dangerous_delete",
-            json!({"deleted": true}),
-        ))
+        Ok(ToolResult::success("dangerous_delete", json!({"deleted": true})).into())
     }
 }
 

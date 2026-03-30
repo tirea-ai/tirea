@@ -10,7 +10,9 @@ use awaken::contract::event::AgentEvent;
 use awaken::contract::event_sink::EventSink;
 use awaken::contract::identity::{RunIdentity, RunOrigin};
 use awaken::contract::message::Message;
-use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult};
+use awaken::contract::tool::{
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
+};
 use awaken::engine::GenaiExecutor;
 use awaken::loop_runner::{AgentLoopParams, LoopStatePlugin, build_agent_env, run_agent_loop};
 use awaken::registry::ResolvedAgent;
@@ -43,14 +45,15 @@ impl Tool for CalculatorTool {
         }
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let expr = args["expression"].as_str().unwrap_or("0");
         let result = eval_simple(expr);
         Ok(ToolResult::success_with_message(
             "calculator",
             json!({ "result": result }),
             result.to_string(),
-        ))
+        )
+        .into())
     }
 }
 

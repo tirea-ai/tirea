@@ -9,7 +9,7 @@ use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequ
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::contract::message::ToolCall;
 use awaken_contract::contract::tool::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 use awaken_contract::registry_spec::AgentSpec;
 use awaken_runtime::builder::AgentRuntimeBuilder;
@@ -129,13 +129,13 @@ impl Tool for EchoTool {
         ToolDescriptor::new("echo", "echo", "Echoes input back")
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let msg = args
             .get("message")
             .and_then(|v| v.as_str())
             .unwrap_or("no message")
             .to_string();
-        Ok(ToolResult::success_with_message("echo", args, msg))
+        Ok(ToolResult::success_with_message("echo", args, msg).into())
     }
 }
 
@@ -147,7 +147,7 @@ impl Tool for FailingTool {
         ToolDescriptor::new("fail", "fail", "Always fails")
     }
 
-    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         Err(ToolError::ExecutionFailed("intentional failure".into()))
     }
 }
@@ -160,9 +160,9 @@ impl Tool for CalcTool {
         ToolDescriptor::new("calc", "calculator", "Evaluates math")
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let result = args.get("result").cloned().unwrap_or(json!(0));
-        Ok(ToolResult::success("calc", result))
+        Ok(ToolResult::success("calc", result).into())
     }
 }
 

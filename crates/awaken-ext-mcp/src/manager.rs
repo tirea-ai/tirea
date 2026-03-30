@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use awaken_contract::PeriodicRefresher;
 use awaken_contract::contract::progress::ProgressStatus;
 use awaken_contract::contract::tool::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 use mcp::McpToolDefinition;
 use mcp::transport::{McpTransportError, ServerCapabilities, TransportTypeId};
@@ -123,7 +123,7 @@ impl Tool for McpTool {
         self.descriptor.clone()
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
         let mut call = Box::pin(
             self.transport
@@ -189,7 +189,7 @@ impl Tool for McpTool {
             );
         }
 
-        Ok(result)
+        Ok(result.into())
     }
 }
 
@@ -1002,12 +1002,12 @@ mod tests {
         let tool = registry.get("mcp__srv__echo").unwrap();
         let ctx = awaken_contract::contract::tool::ToolCallContext::test_default();
 
-        let result = tool.execute(json!({}), &ctx).await.unwrap();
-        assert!(result.is_success());
+        let output = tool.execute(json!({}), &ctx).await.unwrap();
+        assert!(output.result.is_success());
         // MCP metadata is in result.metadata, not result.data
-        assert_eq!(result.metadata["mcp.server"], "srv");
-        assert_eq!(result.metadata["mcp.tool"], "echo");
-        assert!(result.data.get("_mcp").is_none());
+        assert_eq!(output.result.metadata["mcp.server"], "srv");
+        assert_eq!(output.result.metadata["mcp.tool"], "echo");
+        assert!(output.result.data.get("_mcp").is_none());
     }
 
     // ── Helper function tests ──
@@ -1077,9 +1077,9 @@ mod tests {
         let tool = registry.get(&tool_id).unwrap();
         let ctx = awaken_contract::contract::tool::ToolCallContext::test_default();
 
-        let result = tool.execute(json!({}), &ctx).await.unwrap();
-        assert_eq!(result.metadata["mcp.server"], "my-srv");
-        assert_eq!(result.metadata["mcp.tool"], "my-tool");
+        let output = tool.execute(json!({}), &ctx).await.unwrap();
+        assert_eq!(output.result.metadata["mcp.server"], "my-srv");
+        assert_eq!(output.result.metadata["mcp.tool"], "my-tool");
     }
 
     #[tokio::test]
@@ -1095,9 +1095,9 @@ mod tests {
         let tool = registry.get(&tool_id).unwrap();
         let ctx = awaken_contract::contract::tool::ToolCallContext::test_default();
 
-        let result = tool.execute(json!({}), &ctx).await.unwrap();
-        assert!(result.metadata.contains_key(MCP_META_RESULT_CONTENT));
-        assert!(result.data.get("_mcp").is_none());
+        let output = tool.execute(json!({}), &ctx).await.unwrap();
+        assert!(output.result.metadata.contains_key(MCP_META_RESULT_CONTENT));
+        assert!(output.result.data.get("_mcp").is_none());
     }
 
     // ── Progress emission ──

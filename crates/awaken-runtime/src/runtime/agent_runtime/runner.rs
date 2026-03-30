@@ -236,7 +236,7 @@ mod tests {
     use awaken_contract::contract::suspension::ResumeDecisionAction;
     use awaken_contract::contract::suspension::ToolCallResume;
     use awaken_contract::contract::tool::{
-        Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
+        Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
     };
     use awaken_stores::InMemoryStore;
     use serde_json::{Value, json};
@@ -301,16 +301,12 @@ mod tests {
             &self,
             args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
+        ) -> Result<ToolOutput, ToolError> {
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
             if n == 0 {
-                Ok(ToolResult::suspended("dangerous", "needs approval"))
+                Ok(ToolResult::suspended("dangerous", "needs approval").into())
             } else {
-                Ok(ToolResult::success_with_message(
-                    "dangerous",
-                    args,
-                    "approved",
-                ))
+                Ok(ToolResult::success_with_message("dangerous", args, "approved").into())
             }
         }
     }
@@ -443,8 +439,8 @@ mod tests {
             &self,
             _args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::success("writer", Value::Null))
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolResult::success("writer", Value::Null).into())
         }
     }
 
@@ -462,14 +458,14 @@ mod tests {
             &self,
             _args: Value,
             ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
+        ) -> Result<ToolOutput, ToolError> {
             let saw = ctx
                 .snapshot
                 .get::<SequentialVisibilityKey>()
                 .copied()
                 .unwrap_or(false);
             self.saw_marker.store(saw, Ordering::SeqCst);
-            Ok(ToolResult::success("reader", Value::Null))
+            Ok(ToolResult::success("reader", Value::Null).into())
         }
     }
 

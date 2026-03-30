@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use awaken_contract::contract::tool::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 use awaken_ext_generative_ui::{json_render, run_streaming_subagent};
 use awaken_runtime::AgentResolver;
@@ -125,7 +125,7 @@ impl Tool for StreamingGenerativeUiTool {
         Ok(())
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let prompt = args
             .get("prompt")
             .and_then(Value::as_str)
@@ -151,7 +151,8 @@ impl Tool for StreamingGenerativeUiTool {
                 "content": snapshot,
                 "steps": result.steps,
             }),
-        ))
+        )
+        .into())
     }
 }
 

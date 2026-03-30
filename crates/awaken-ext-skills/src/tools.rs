@@ -4,10 +4,13 @@ use crate::skill::{Skill, SkillResource, SkillResourceKind};
 use crate::skill_md::parse_allowed_tool_token;
 use crate::{SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID};
 use awaken_contract::contract::tool::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult, ToolStatus,
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult, ToolStatus,
 };
+use awaken_contract::state::StateCommand;
+use awaken_ext_permission::actions as permission_actions;
+use awaken_ext_permission::rules::ToolPermissionBehavior;
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -80,11 +83,11 @@ impl Tool for SkillActivateTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let key = match required_string_arg(&args, "skill") {
             Ok(v) => v,
             Err(err) => {
-                return Ok(err.into_tool_result(SKILL_ACTIVATE_TOOL_ID));
+                return Ok(err.into_tool_result(SKILL_ACTIVATE_TOOL_ID).into());
             }
         };
 
@@ -97,7 +100,7 @@ impl Tool for SkillActivateTool {
         });
         let skill = match skill {
             Ok(s) => s,
-            Err(r) => return Ok(r),
+            Err(r) => return Ok(r.into()),
         };
         let meta = skill.meta();
 
@@ -108,7 +111,7 @@ impl Tool for SkillActivateTool {
             .map_err(|e| map_skill_error(SKILL_ACTIVATE_TOOL_ID, e));
         let _activation = match activation {
             Ok(v) => v,
-            Err(r) => return Ok(r),
+            Err(r) => return Ok(r.into()),
         };
 
         let mut applied_tool_ids: Vec<String> = Vec::new();
@@ -153,7 +156,27 @@ impl Tool for SkillActivateTool {
             );
         }
 
-        Ok(ToolResult {
+        // Build side-effects: state mutation + permission elevation
+        let mut cmd = StateCommand::new();
+
+        // 1. Track activation in SkillState (grow-only set, commutative merge)
+        cmd.update::<crate::state::SkillState>(crate::state::SkillStateUpdate::Activate(
+            meta.id.clone(),
+        ));
+
+        // 2. Grant run-scoped permission overrides for declared allowed_tools
+        for tool_id in &applied_tool_ids {
+            permission_actions::grant_tool_override(&mut cmd, tool_id);
+        }
+        for pattern in &applied_tool_patterns {
+            permission_actions::grant_rule_override(
+                &mut cmd,
+                pattern,
+                ToolPermissionBehavior::Allow,
+            );
+        }
+
+        let result = ToolResult {
             tool_name: SKILL_ACTIVATE_TOOL_ID.to_string(),
             status: ToolStatus::Success,
             data: json!({
@@ -163,7 +186,9 @@ impl Tool for SkillActivateTool {
             message: Some(format!("Launching skill: {}", meta.id)),
             suspension: None,
             metadata: Default::default(),
-        })
+        };
+
+        Ok(ToolOutput::with_command(result, cmd))
     }
 }
 
@@ -208,19 +233,19 @@ impl Tool for LoadSkillResourceTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let tool_name = SKILL_LOAD_RESOURCE_TOOL_ID;
         let key = match required_string_arg(&args, "skill") {
             Ok(v) => v,
-            Err(err) => return Ok(err.into_tool_result(tool_name)),
+            Err(err) => return Ok(err.into_tool_result(tool_name).into()),
         };
         let path = match required_string_arg(&args, "path") {
             Ok(v) => v,
-            Err(err) => return Ok(err.into_tool_result(tool_name)),
+            Err(err) => return Ok(err.into_tool_result(tool_name).into()),
         };
         let kind = match parse_resource_kind(args.get("kind"), &path) {
             Ok(v) => v,
-            Err(err) => return Ok(err.into_tool_result(tool_name)),
+            Err(err) => return Ok(err.into_tool_result(tool_name).into()),
         };
 
         let skill = self
@@ -228,7 +253,7 @@ impl Tool for LoadSkillResourceTool {
             .ok_or_else(|| tool_error(tool_name, "unknown_skill", format!("Unknown skill: {key}")));
         let skill = match skill {
             Ok(v) => v,
-            Err(r) => return Ok(r),
+            Err(r) => return Ok(r.into()),
         };
         let meta = skill.meta();
 
@@ -238,7 +263,7 @@ impl Tool for LoadSkillResourceTool {
             .map_err(|e| map_skill_error(tool_name, e));
         let resource = match resource {
             Ok(v) => v,
-            Err(r) => return Ok(r),
+            Err(r) => return Ok(r.into()),
         };
 
         match resource {
@@ -264,7 +289,8 @@ impl Tool for LoadSkillResourceTool {
                         "truncated": mat.truncated,
                         "content": mat.content,
                     }),
-                ))
+                )
+                .into())
             }
             SkillResource::Asset(asset) => {
                 debug!(
@@ -291,7 +317,8 @@ impl Tool for LoadSkillResourceTool {
                         "encoding": asset.encoding,
                         "content": asset.content,
                     }),
-                ))
+                )
+                .into())
             }
         }
     }
@@ -337,14 +364,14 @@ impl Tool for SkillScriptTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let key = match required_string_arg(&args, "skill") {
             Ok(v) => v,
-            Err(err) => return Ok(err.into_tool_result(SKILL_SCRIPT_TOOL_ID)),
+            Err(err) => return Ok(err.into_tool_result(SKILL_SCRIPT_TOOL_ID).into()),
         };
         let script = match required_string_arg(&args, "script") {
             Ok(v) => v,
-            Err(err) => return Ok(err.into_tool_result(SKILL_SCRIPT_TOOL_ID)),
+            Err(err) => return Ok(err.into_tool_result(SKILL_SCRIPT_TOOL_ID).into()),
         };
         let argv: Vec<String> = args
             .get("args")
@@ -365,7 +392,7 @@ impl Tool for SkillScriptTool {
         });
         let skill = match skill {
             Ok(v) => v,
-            Err(r) => return Ok(r),
+            Err(r) => return Ok(r.into()),
         };
         let meta = skill.meta();
 
@@ -375,7 +402,7 @@ impl Tool for SkillScriptTool {
             .map_err(|e| map_skill_error(SKILL_SCRIPT_TOOL_ID, e));
         let res = match res {
             Ok(v) => v,
-            Err(r) => return Ok(r),
+            Err(r) => return Ok(r.into()),
         };
 
         debug!(
@@ -400,7 +427,8 @@ impl Tool for SkillScriptTool {
                 "stdout": res.stdout,
                 "stderr": res.stderr,
             }),
-        ))
+        )
+        .into())
     }
 }
 
@@ -615,7 +643,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.is_success());
+        assert!(result.result.is_success());
         let calls = skill.seen_args.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0], Some(json!({"path": "src/lib.rs"})));
@@ -631,9 +659,10 @@ mod tests {
             .execute(json!({"skill": "nonexistent"}), &ctx)
             .await
             .unwrap();
-        assert!(result.is_error());
+        assert!(result.result.is_error());
         assert!(
             result
+                .result
                 .message
                 .as_deref()
                 .unwrap_or("")
@@ -648,7 +677,7 @@ mod tests {
         let ctx = ToolCallContext::test_default();
 
         let result = tool.execute(json!({}), &ctx).await.unwrap();
-        assert!(result.is_error());
+        assert!(result.result.is_error());
     }
 
     #[tokio::test]
@@ -661,7 +690,7 @@ mod tests {
             .execute(json!({"skill": "no", "path": "references/a.md"}), &ctx)
             .await
             .unwrap();
-        assert!(result.is_error());
+        assert!(result.result.is_error());
     }
 
     #[tokio::test]
@@ -674,7 +703,7 @@ mod tests {
             .execute(json!({"skill": "no", "script": "scripts/run.sh"}), &ctx)
             .await
             .unwrap();
-        assert!(result.is_error());
+        assert!(result.result.is_error());
     }
 
     #[tokio::test]
@@ -687,7 +716,7 @@ mod tests {
             .execute(json!({"skill": "s", "path": "../escape"}), &ctx)
             .await
             .unwrap();
-        assert!(result.is_error());
+        assert!(result.result.is_error());
     }
 
     #[tokio::test]
@@ -700,7 +729,7 @@ mod tests {
             .execute(json!({"skill": "s", "path": "other/file.md"}), &ctx)
             .await
             .unwrap();
-        assert!(result.is_error());
+        assert!(result.result.is_error());
     }
 
     // ── SkillActivateTool descriptor ──
@@ -722,7 +751,7 @@ mod tests {
         let ctx = ToolCallContext::test_default();
 
         let result = tool.execute(json!({"skill": ""}), &ctx).await.unwrap();
-        assert!(result.is_error());
+        assert!(result.result.is_error());
     }
 
     #[tokio::test]
@@ -732,7 +761,7 @@ mod tests {
         let ctx = ToolCallContext::test_default();
 
         let result = tool.execute(json!({"skill": "   "}), &ctx).await.unwrap();
-        assert!(result.is_error());
+        assert!(result.result.is_error());
     }
 
     // ── LoadSkillResourceTool descriptor ──
@@ -756,7 +785,7 @@ mod tests {
         let ctx = ToolCallContext::test_default();
 
         let result = tool.execute(json!({"skill": "s"}), &ctx).await.unwrap();
-        assert!(result.is_error());
+        assert!(result.result.is_error());
     }
 
     #[tokio::test]
@@ -769,7 +798,7 @@ mod tests {
             .execute(json!({"skill": "s", "path": "/etc/passwd"}), &ctx)
             .await
             .unwrap();
-        assert!(result.is_error());
+        assert!(result.result.is_error());
     }
 
     #[tokio::test]
@@ -785,7 +814,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(result.is_error());
+        assert!(result.result.is_error());
     }
 
     #[tokio::test]
@@ -810,7 +839,7 @@ mod tests {
             .execute(json!({"skill": "record", "path": "references/a.md"}), &ctx)
             .await
             .unwrap();
-        assert!(result.is_error());
+        assert!(result.result.is_error());
     }
 
     // ── SkillScriptTool descriptor ──
@@ -834,7 +863,7 @@ mod tests {
         let ctx = ToolCallContext::test_default();
 
         let result = tool.execute(json!({"skill": "s"}), &ctx).await.unwrap();
-        assert!(result.is_error());
+        assert!(result.result.is_error());
     }
 
     #[tokio::test]
@@ -858,7 +887,7 @@ mod tests {
             .execute(json!({"skill": "record", "script": "scripts/run.sh"}), &ctx)
             .await
             .unwrap();
-        assert!(result.is_error());
+        assert!(result.result.is_error());
     }
 
     // ── Script tool with actual output ──
@@ -928,10 +957,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(result.is_success());
-        assert_eq!(result.data["ok"], true);
-        assert_eq!(result.data["stdout"], "hello world");
-        assert_eq!(result.data["exit_code"], 0);
+        assert!(result.result.is_success());
+        assert_eq!(result.result.data["ok"], true);
+        assert_eq!(result.result.data["stdout"], "hello world");
+        assert_eq!(result.result.data["exit_code"], 0);
     }
 
     // ── Helper function tests ──

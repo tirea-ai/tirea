@@ -126,7 +126,9 @@ impl BundleComposer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contract::tool::{ToolCallContext, ToolDescriptor, ToolError, ToolResult};
+    use crate::contract::tool::{
+        ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
+    };
     use async_trait::async_trait;
     use serde_json::{Value, json};
 
@@ -152,8 +154,8 @@ mod tests {
             &self,
             _args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::success(&self.descriptor.id, json!(null)))
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolResult::success(&self.descriptor.id, json!(null)).into())
         }
     }
 

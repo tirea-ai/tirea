@@ -16,7 +16,9 @@ use awaken::contract::inference::{StopReason, StreamResult};
 use awaken::contract::lifecycle::{RunStatus, TerminationReason};
 use awaken::contract::message::{Message, ToolCall};
 use awaken::contract::suspension::{ToolCallOutcome, ToolCallStatus};
-use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult};
+use awaken::contract::tool::{
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
+};
 use awaken::execution::ParallelToolExecutor;
 use awaken::loop_runner::{AgentLoopParams, build_agent_env, run_agent_loop};
 use awaken::registry::AgentSpec;
@@ -77,13 +79,13 @@ impl Tool for EchoTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor::new("echo", "echo", "Echoes")
     }
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let msg = args
             .get("message")
             .and_then(|v| v.as_str())
             .unwrap_or("echo")
             .to_string();
-        Ok(ToolResult::success_with_message("echo", args, msg))
+        Ok(ToolResult::success_with_message("echo", args, msg).into())
     }
 }
 
@@ -93,7 +95,7 @@ impl Tool for FailingTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor::new("failing", "failing", "Fails")
     }
-    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         Err(ToolError::ExecutionFailed("intentional failure".into()))
     }
 }
@@ -104,8 +106,8 @@ impl Tool for SuspendingTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor::new("suspending", "suspending", "Suspends")
     }
-    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
-        Ok(ToolResult::suspended("suspending", "needs approval"))
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        Ok(ToolResult::suspended("suspending", "needs approval").into())
     }
 }
 
@@ -117,9 +119,9 @@ impl Tool for CountingTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor::new("counting", "counting", "Counts")
     }
-    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let n = self.call_count.fetch_add(1, Ordering::SeqCst) + 1;
-        Ok(ToolResult::success("counting", json!({"count": n})))
+        Ok(ToolResult::success("counting", json!({"count": n})).into())
     }
 }
 

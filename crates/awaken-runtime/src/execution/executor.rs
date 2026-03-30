@@ -6,14 +6,16 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_contract::contract::message::ToolCall;
 use awaken_contract::contract::suspension::ToolCallOutcome;
-use awaken_contract::contract::tool::{Tool, ToolCallContext, ToolResult};
+use awaken_contract::contract::tool::{Tool, ToolCallContext, ToolOutput, ToolResult};
+use awaken_contract::state::StateCommand;
 
 /// Result of executing a single tool call.
-#[derive(Debug, Clone)]
 pub struct ToolExecutionResult {
     pub call: ToolCall,
     pub result: ToolResult,
     pub outcome: ToolCallOutcome,
+    /// Side-effects produced by the tool (state mutations, scheduled actions, effects).
+    pub command: StateCommand,
 }
 
 /// Error from tool execution strategy.
@@ -66,13 +68,14 @@ impl ToolExecutor for SequentialToolExecutor {
             let mut ctx = base_ctx.clone();
             ctx.call_id = call.id.clone();
             ctx.tool_name = call.name.clone();
-            let result = execute_single_tool(tools, call, &ctx).await;
-            let outcome = ToolCallOutcome::from_tool_result(&result);
+            let output = execute_single_tool(tools, call, &ctx).await;
+            let outcome = ToolCallOutcome::from_tool_result(&output.result);
 
             results.push(ToolExecutionResult {
                 call: call.clone(),
-                result,
+                result: output.result,
                 outcome,
+                command: output.command,
             });
 
             // Stop at first suspension
@@ -176,12 +179,13 @@ impl ToolExecutor for ParallelToolExecutor {
                 ctx.call_id = call.id.clone();
                 ctx.tool_name = call.name.clone();
                 async move {
-                    let result = execute_single_tool(&tools, &call, &ctx).await;
-                    let outcome = ToolCallOutcome::from_tool_result(&result);
+                    let output = execute_single_tool(&tools, &call, &ctx).await;
+                    let outcome = ToolCallOutcome::from_tool_result(&output.result);
                     ToolExecutionResult {
                         call,
-                        result,
+                        result: output.result,
                         outcome,
+                        command: output.command,
                     }
                 }
             })
@@ -203,25 +207,25 @@ pub(crate) async fn execute_single_tool(
     tools: &HashMap<String, Arc<dyn Tool>>,
     call: &ToolCall,
     ctx: &ToolCallContext,
-) -> ToolResult {
+) -> ToolOutput {
     let Some(tool) = tools.get(&call.name) else {
-        return ToolResult::error(&call.name, format!("tool '{}' not found", call.name));
+        return ToolResult::error(&call.name, format!("tool '{}' not found", call.name)).into();
     };
 
     if let Err(e) = tool.validate_args(&call.arguments) {
-        return ToolResult::error(&call.name, e.to_string());
+        return ToolResult::error(&call.name, e.to_string()).into();
     }
 
     match tool.execute(call.arguments.clone(), ctx).await {
-        Ok(result) => result,
-        Err(e) => ToolResult::error(&call.name, e.to_string()),
+        Ok(output) => output,
+        Err(e) => ToolResult::error(&call.name, e.to_string()).into(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_contract::contract::tool::{ToolDescriptor, ToolError};
+    use awaken_contract::contract::tool::{ToolDescriptor, ToolError, ToolOutput};
     use serde_json::{Value, json};
 
     struct EchoTool;
@@ -236,13 +240,13 @@ mod tests {
             &self,
             args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
+        ) -> Result<ToolOutput, ToolError> {
             let msg = args
                 .get("message")
                 .and_then(|v| v.as_str())
                 .unwrap_or("no message")
                 .to_string();
-            Ok(ToolResult::success_with_message("echo", args, msg))
+            Ok(ToolResult::success_with_message("echo", args, msg).into())
         }
     }
 
@@ -258,7 +262,7 @@ mod tests {
             &self,
             _args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
+        ) -> Result<ToolOutput, ToolError> {
             Err(ToolError::ExecutionFailed("intentional failure".into()))
         }
     }
@@ -275,8 +279,8 @@ mod tests {
             &self,
             _args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::suspended("suspending", "needs approval"))
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolResult::suspended("suspending", "needs approval").into())
         }
     }
 
@@ -562,12 +566,9 @@ mod tests {
             &self,
             _args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
+        ) -> Result<ToolOutput, ToolError> {
             let n = self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(ToolResult::success(
-                "counting",
-                json!({"call_number": n + 1}),
-            ))
+            Ok(ToolResult::success("counting", json!({"call_number": n + 1})).into())
         }
     }
 
@@ -713,8 +714,8 @@ mod tests {
             &self,
             args: Value,
             _ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::success("strict", args))
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolResult::success("strict", args).into())
         }
     }
 
@@ -766,17 +767,15 @@ mod tests {
     }
 
     #[test]
-    fn tool_execution_result_clone_and_debug() {
-        // Ensure types are debuggable
+    fn tool_execution_result_fields() {
         let result = ToolExecutionResult {
             call: ToolCall::new("c1", "echo", json!({})),
             result: ToolResult::success("echo", json!({"ok": true})),
             outcome: ToolCallOutcome::Succeeded,
+            command: StateCommand::default(),
         };
-        let cloned = result.clone();
-        assert_eq!(cloned.call.id, "c1");
-        assert_eq!(cloned.outcome, ToolCallOutcome::Succeeded);
-        let _ = format!("{:?}", result);
+        assert_eq!(result.call.id, "c1");
+        assert_eq!(result.outcome, ToolCallOutcome::Succeeded);
     }
 
     #[test]
@@ -816,10 +815,10 @@ mod tests {
             &self,
             _args: Value,
             ctx: &ToolCallContext,
-        ) -> Result<ToolResult, ToolError> {
+        ) -> Result<ToolOutput, ToolError> {
             *self.captured_call_id.lock().unwrap() = ctx.call_id.clone();
             *self.captured_tool_name.lock().unwrap() = ctx.tool_name.clone();
-            Ok(ToolResult::success("capture", json!({"captured": true})))
+            Ok(ToolResult::success("capture", json!({"captured": true})).into())
         }
     }
 
@@ -830,8 +829,8 @@ mod tests {
         let call = ToolCall::new("call-42", "capture", json!({}));
         let ctx = ToolCallContext::test_default();
 
-        let result = execute_single_tool(&tools, &call, &ctx).await;
-        assert!(result.is_success());
+        let output = execute_single_tool(&tools, &call, &ctx).await;
+        assert!(output.result.is_success());
         // execute_single_tool sets call_id and tool_name from the call's context
         // (the caller is responsible for setting ctx fields, which the executor does)
     }
@@ -842,10 +841,11 @@ mod tests {
         let call = ToolCall::new("c1", "ghost_tool", json!({}));
         let ctx = ToolCallContext::test_default();
 
-        let result = execute_single_tool(&tools, &call, &ctx).await;
-        assert!(result.is_error());
+        let output = execute_single_tool(&tools, &call, &ctx).await;
+        assert!(output.result.is_error());
         assert!(
-            result
+            output
+                .result
                 .message
                 .as_deref()
                 .unwrap_or("")
@@ -859,8 +859,8 @@ mod tests {
         let call = ToolCall::new("c1", "strict", json!({"wrong": "field"}));
         let ctx = ToolCallContext::test_default();
 
-        let result = execute_single_tool(&tools, &call, &ctx).await;
-        assert!(result.is_error());
+        let output = execute_single_tool(&tools, &call, &ctx).await;
+        assert!(output.result.is_error());
     }
 
     #[tokio::test]
@@ -970,8 +970,8 @@ mod tests {
         let call = ToolCall::new("c1", "echo", json!({"message": "test"}));
         let ctx = ToolCallContext::test_default();
 
-        let result = execute_single_tool(&tools, &call, &ctx).await;
-        assert!(result.is_success());
-        assert_eq!(result.tool_name, "echo");
+        let output = execute_single_tool(&tools, &call, &ctx).await;
+        assert!(output.result.is_success());
+        assert_eq!(output.result.tool_name, "echo");
     }
 }

@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use awaken_contract::contract::tool::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 
 use super::state::{Place, TravelState};
@@ -36,7 +36,7 @@ impl Tool for AddTripTool {
             }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let raw_trips = args["trips"]
             .as_array()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'trips' array".into()))?;
@@ -48,7 +48,8 @@ impl Tool for AddTripTool {
         Ok(ToolResult::success(
             "add_trips",
             json!({ "added": added, "total": existing_count + added }),
-        ))
+        )
+        .into())
     }
 }
 
@@ -84,7 +85,7 @@ impl Tool for UpdateTripTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let updates = args["trips"]
             .as_array()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'trips' array".into()))?;
@@ -99,10 +100,7 @@ impl Tool for UpdateTripTool {
             }
         }
 
-        Ok(ToolResult::success(
-            "update_trips",
-            json!({ "updated": updated_count }),
-        ))
+        Ok(ToolResult::success("update_trips", json!({ "updated": updated_count })).into())
     }
 }
 
@@ -130,7 +128,7 @@ impl Tool for DeleteTripTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let ids: Vec<&str> = args["trip_ids"]
             .as_array()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'trip_ids' array".into()))?
@@ -145,10 +143,7 @@ impl Tool for DeleteTripTool {
                 .count()
         });
 
-        Ok(ToolResult::success(
-            "delete_trips",
-            json!({ "deleted": deleted }),
-        ))
+        Ok(ToolResult::success("delete_trips", json!({ "deleted": deleted })).into())
     }
 }
 
@@ -175,15 +170,12 @@ impl Tool for SelectTripTool {
         }))
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let trip_id = args["trip_id"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'trip_id'".into()))?;
 
-        Ok(ToolResult::success(
-            "select_trip",
-            json!({ "selected": trip_id }),
-        ))
+        Ok(ToolResult::success("select_trip", json!({ "selected": trip_id })).into())
     }
 }
 
@@ -221,7 +213,7 @@ impl Tool for SearchPlacesTool {
         }))
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let destination = args["destination"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'destination'".into()))?;
@@ -237,7 +229,8 @@ impl Tool for SearchPlacesTool {
                 "places_found": places.len(),
                 "places": places,
             }),
-        ))
+        )
+        .into())
     }
 }
 
@@ -352,8 +345,8 @@ mod tests {
             .execute(json!({"destination": "Paris", "trip_id": "t1"}), &ctx)
             .await
             .unwrap();
-        assert!(result.is_success());
-        assert_eq!(result.data["places_found"], 3);
+        assert!(result.result.is_success());
+        assert_eq!(result.result.data["places_found"], 3);
     }
 
     #[tokio::test]
@@ -361,7 +354,7 @@ mod tests {
         let tool = SelectTripTool;
         let ctx = ToolCallContext::test_default();
         let result = tool.execute(json!({"trip_id": "abc"}), &ctx).await.unwrap();
-        assert!(result.is_success());
-        assert_eq!(result.data["selected"], "abc");
+        assert!(result.result.is_success());
+        assert_eq!(result.result.data["selected"], "abc");
     }
 }

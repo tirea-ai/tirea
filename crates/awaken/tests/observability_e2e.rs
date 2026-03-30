@@ -15,7 +15,9 @@ use awaken::contract::identity::{RunIdentity, RunOrigin};
 use awaken::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken::contract::lifecycle::TerminationReason;
 use awaken::contract::message::{Message, ToolCall};
-use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult};
+use awaken::contract::tool::{
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
+};
 use awaken::ext_observability::{InMemorySink, ObservabilityPlugin};
 use awaken::loop_runner::{AgentLoopParams, build_agent_env, run_agent_loop};
 use awaken::*;
@@ -82,13 +84,13 @@ impl Tool for EchoTool {
         ToolDescriptor::new("echo", "echo", "Echoes input back")
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let msg = args
             .get("message")
             .and_then(|v| v.as_str())
             .unwrap_or("no message")
             .to_string();
-        Ok(ToolResult::success_with_message("echo", args, msg))
+        Ok(ToolResult::success_with_message("echo", args, msg).into())
     }
 }
 
@@ -100,9 +102,9 @@ impl Tool for CalcTool {
         ToolDescriptor::new("calc", "calculator", "Evaluates math")
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let result = args.get("result").cloned().unwrap_or(json!(0));
-        Ok(ToolResult::success("calc", result))
+        Ok(ToolResult::success("calc", result).into())
     }
 }
 

@@ -18,7 +18,7 @@ use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage}
 use awaken_contract::contract::lifecycle::TerminationReason;
 use awaken_contract::contract::message::{Message, ToolCall};
 use awaken_contract::contract::tool::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 
 use awaken_runtime::engine::MockLlmExecutor;
@@ -64,12 +64,12 @@ impl Tool for SuspendOnceTool {
         ToolDescriptor::new("dangerous", "dangerous", "suspend once")
     }
 
-    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         if n == 0 {
-            Ok(ToolResult::suspended("dangerous", "needs approval"))
+            Ok(ToolResult::suspended("dangerous", "needs approval").into())
         } else {
-            Ok(ToolResult::success("dangerous", json!({"ok": true})))
+            Ok(ToolResult::success("dangerous", json!({"ok": true})).into())
         }
     }
 }
@@ -401,11 +401,8 @@ impl Tool for GetWeatherTool {
         )
     }
 
-    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
-        Ok(ToolResult::success(
-            "get_weather",
-            json!({"temp": 25, "condition": "sunny"}),
-        ))
+    async fn execute(&self, _args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        Ok(ToolResult::success("get_weather", json!({"temp": 25, "condition": "sunny"})).into())
     }
 }
 
@@ -611,13 +608,10 @@ impl Tool for ReportingTool {
         )
     }
 
-    async fn execute(&self, _args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         // Emit an activity snapshot through the context
         ctx.report_activity("progress", "50% complete").await;
-        Ok(ToolResult::success(
-            "reporting_tool",
-            json!({"status": "done"}),
-        ))
+        Ok(ToolResult::success("reporting_tool", json!({"status": "done"})).into())
     }
 }
 

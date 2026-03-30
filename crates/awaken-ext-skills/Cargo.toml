@@ -7,6 +7,7 @@ edition.workspace = true
 awaken-contract = { workspace = true }
 awaken-runtime = { workspace = true }
 awaken-ext-mcp = { workspace = true, optional = true }
+awaken-ext-permission = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

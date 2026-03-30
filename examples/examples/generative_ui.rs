@@ -19,7 +19,7 @@ use awaken_contract::contract::identity::{RunIdentity, RunOrigin};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::contract::message::{Message, ToolCall};
 use awaken_contract::contract::tool::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 use awaken_ext_generative_ui::{openui, run_streaming_subagent};
 use awaken_runtime::loop_runner::{AgentLoopParams, build_agent_env, run_agent_loop};
@@ -104,7 +104,7 @@ impl Tool for RenderUITool {
         Ok(())
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let prompt = args
             .get("prompt")
             .and_then(Value::as_str)
@@ -119,7 +119,8 @@ impl Tool for RenderUITool {
                 "ui_content": result.content,
                 "steps": result.steps,
             }),
-        ))
+        )
+        .into())
     }
 }
 

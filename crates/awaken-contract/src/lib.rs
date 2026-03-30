@@ -29,7 +29,9 @@ pub use contract::agent_card::{AgentCard, AgentCardAuth};
 pub use registry_spec::{AgentSpec, PluginConfigKey};
 
 // ── state ──
-pub use state::{KeyScope, MergeStrategy, StateKey, StateKeyOptions, StateMap};
+pub use state::{
+    KeyScope, MergeStrategy, MutationBatch, StateCommand, StateKey, StateKeyOptions, StateMap,
+};
 pub use state::{PersistedState, Snapshot};
 
 // ── progress ──

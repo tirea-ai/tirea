@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use awaken_contract::contract::tool::{
-    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
+    Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 
 use super::state::ResearchState;
@@ -32,7 +32,7 @@ impl Tool for SearchTool {
         }))
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let query = args["query"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'query'".into()))?;
@@ -45,7 +45,8 @@ impl Tool for SearchTool {
                 "query": query,
                 "results": results,
             }),
-        ))
+        )
+        .into())
     }
 }
 
@@ -72,15 +73,12 @@ impl Tool for WriteReportTool {
         }))
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let report = args["report"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'report'".into()))?;
 
-        Ok(ToolResult::success(
-            "write_report",
-            json!({ "length": report.len() }),
-        ))
+        Ok(ToolResult::success("write_report", json!({ "length": report.len() })).into())
     }
 }
 
@@ -107,15 +105,12 @@ impl Tool for SetQuestionTool {
         }))
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let question = args["question"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'question'".into()))?;
 
-        Ok(ToolResult::success(
-            "set_research_question",
-            json!({ "question": question }),
-        ))
+        Ok(ToolResult::success("set_research_question", json!({ "question": question })).into())
     }
 }
 
@@ -143,7 +138,7 @@ impl Tool for DeleteResourcesTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let ids: Vec<&str> = args["resource_ids"]
             .as_array()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'resource_ids' array".into()))?
@@ -158,10 +153,7 @@ impl Tool for DeleteResourcesTool {
                 .count()
         });
 
-        Ok(ToolResult::success(
-            "delete_resources",
-            json!({ "deleted": deleted }),
-        ))
+        Ok(ToolResult::success("delete_resources", json!({ "deleted": deleted })).into())
     }
 }
 
@@ -198,7 +190,7 @@ impl Tool for ExtractResourcesTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let raw = args["resources"]
             .as_array()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'resources' array".into()))?;
@@ -210,7 +202,8 @@ impl Tool for ExtractResourcesTool {
         Ok(ToolResult::success(
             "extract_resources",
             json!({ "added": raw.len(), "total": existing + raw.len() }),
-        ))
+        )
+        .into())
     }
 }
 
@@ -277,8 +270,8 @@ mod tests {
             .execute(json!({"query": "rust programming"}), &ctx)
             .await
             .unwrap();
-        assert!(result.is_success());
-        assert_eq!(result.data["results"].as_array().unwrap().len(), 3);
+        assert!(result.result.is_success());
+        assert_eq!(result.result.data["results"].as_array().unwrap().len(), 3);
     }
 
     #[tokio::test]
@@ -289,8 +282,8 @@ mod tests {
             .execute(json!({"report": "Test report content"}), &ctx)
             .await
             .unwrap();
-        assert!(result.is_success());
-        assert_eq!(result.data["length"], 19);
+        assert!(result.result.is_success());
+        assert_eq!(result.result.data["length"], 19);
     }
 
     #[tokio::test]
@@ -301,7 +294,208 @@ mod tests {
             .execute(json!({"question": "What is AI?"}), &ctx)
             .await
             .unwrap();
-        assert!(result.is_success());
-        assert_eq!(result.data["question"], "What is AI?");
+        assert!(result.result.is_success());
+        assert_eq!(result.result.data["question"], "What is AI?");
+    }
+
+    #[tokio::test]
+    async fn search_tool_with_empty_query_returns_error() {
+        let tool = SearchTool;
+        let ctx = ToolCallContext::test_default();
+        let err = tool
+            .execute(json!({}), &ctx)
+            .await
+            .expect_err("missing query should return error");
+        assert!(matches!(err, ToolError::InvalidArguments(_)));
+    }
+
+    #[tokio::test]
+    async fn delete_resources_with_empty_ids_array() {
+        let tool = DeleteResourcesTool;
+        let ctx = ToolCallContext::test_default();
+        let result = tool
+            .execute(json!({"resource_ids": []}), &ctx)
+            .await
+            .unwrap();
+        assert!(result.result.is_success());
+        assert_eq!(result.result.data["deleted"], 0);
+    }
+
+    #[tokio::test]
+    async fn extract_resources_with_empty_array() {
+        let tool = ExtractResourcesTool;
+        let ctx = ToolCallContext::test_default();
+        let result = tool.execute(json!({"resources": []}), &ctx).await.unwrap();
+        assert!(result.result.is_success());
+        assert_eq!(result.result.data["added"], 0);
+        assert_eq!(result.result.data["total"], 0);
+    }
+
+    #[tokio::test]
+    async fn delete_resources_reads_state_snapshot() {
+        use crate::research::state::{ResearchState, ResearchStateValue, Resource};
+        use awaken_contract::contract::tool::ToolCallContext;
+        use awaken_contract::state::Snapshot;
+        use awaken_contract::state::StateMap;
+        use std::sync::Arc;
+
+        let mut map = StateMap::default();
+        map.insert::<ResearchState>(ResearchStateValue {
+            research_question: String::new(),
+            report: String::new(),
+            resources: vec![
+                Resource {
+                    id: "r1".into(),
+                    url: "https://example.com/1".into(),
+                    title: "First".into(),
+                    description: "desc1".into(),
+                },
+                Resource {
+                    id: "r2".into(),
+                    url: "https://example.com/2".into(),
+                    title: "Second".into(),
+                    description: "desc2".into(),
+                },
+                Resource {
+                    id: "r3".into(),
+                    url: "https://example.com/3".into(),
+                    title: "Third".into(),
+                    description: "desc3".into(),
+                },
+            ],
+            logs: vec![],
+        });
+        let snapshot = Snapshot::new(1, Arc::new(map));
+        let ctx = ToolCallContext {
+            snapshot,
+            ..ToolCallContext::test_default()
+        };
+
+        let tool = DeleteResourcesTool;
+        let result = tool
+            .execute(json!({"resource_ids": ["r1", "r3"]}), &ctx)
+            .await
+            .unwrap();
+        assert!(result.result.is_success());
+        assert_eq!(result.result.data["deleted"], 2);
+    }
+
+    #[tokio::test]
+    async fn extract_resources_reads_existing_state_count() {
+        use crate::research::state::{ResearchState, ResearchStateValue, Resource};
+        use awaken_contract::contract::tool::ToolCallContext;
+        use awaken_contract::state::Snapshot;
+        use awaken_contract::state::StateMap;
+        use std::sync::Arc;
+
+        let mut map = StateMap::default();
+        map.insert::<ResearchState>(ResearchStateValue {
+            research_question: String::new(),
+            report: String::new(),
+            resources: vec![Resource {
+                id: "existing".into(),
+                url: "https://example.com/x".into(),
+                title: "Existing".into(),
+                description: "already there".into(),
+            }],
+            logs: vec![],
+        });
+        let snapshot = Snapshot::new(1, Arc::new(map));
+        let ctx = ToolCallContext {
+            snapshot,
+            ..ToolCallContext::test_default()
+        };
+
+        let tool = ExtractResourcesTool;
+        let result = tool
+            .execute(
+                json!({"resources": [
+                    {"id": "new1", "url": "https://example.com/new1", "title": "New", "description": "d"}
+                ]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(result.result.is_success());
+        assert_eq!(result.result.data["added"], 1);
+        assert_eq!(result.result.data["total"], 2);
+    }
+
+    #[tokio::test]
+    async fn all_tools_return_empty_command() {
+        let ctx = ToolCallContext::test_default();
+
+        let search = SearchTool
+            .execute(json!({"query": "test"}), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            search.command.is_empty(),
+            "SearchTool command should be empty"
+        );
+
+        let report = WriteReportTool
+            .execute(json!({"report": "content"}), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            report.command.is_empty(),
+            "WriteReportTool command should be empty"
+        );
+
+        let question = SetQuestionTool
+            .execute(json!({"question": "q?"}), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            question.command.is_empty(),
+            "SetQuestionTool command should be empty"
+        );
+
+        let delete = DeleteResourcesTool
+            .execute(json!({"resource_ids": []}), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            delete.command.is_empty(),
+            "DeleteResourcesTool command should be empty"
+        );
+
+        let extract = ExtractResourcesTool
+            .execute(json!({"resources": []}), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            extract.command.is_empty(),
+            "ExtractResourcesTool command should be empty"
+        );
+    }
+
+    #[test]
+    fn tool_descriptors_have_correct_ids_and_required_parameters() {
+        let search_desc = SearchTool.descriptor();
+        assert_eq!(search_desc.id, "search");
+        assert_eq!(search_desc.name, "Search");
+        assert_eq!(search_desc.parameters["required"], json!(["query"]));
+
+        let report_desc = WriteReportTool.descriptor();
+        assert_eq!(report_desc.id, "write_report");
+        assert_eq!(report_desc.name, "Write Report");
+        assert_eq!(report_desc.parameters["required"], json!(["report"]));
+
+        let question_desc = SetQuestionTool.descriptor();
+        assert_eq!(question_desc.id, "set_research_question");
+        assert_eq!(question_desc.name, "Set Research Question");
+        assert_eq!(question_desc.parameters["required"], json!(["question"]));
+
+        let delete_desc = DeleteResourcesTool.descriptor();
+        assert_eq!(delete_desc.id, "delete_resources");
+        assert_eq!(delete_desc.name, "Delete Resources");
+        assert_eq!(delete_desc.parameters["required"], json!(["resource_ids"]));
+
+        let extract_desc = ExtractResourcesTool.descriptor();
+        assert_eq!(extract_desc.id, "extract_resources");
+        assert_eq!(extract_desc.name, "Extract Resources");
+        assert_eq!(extract_desc.parameters["required"], json!(["resources"]));
     }
 }

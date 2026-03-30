@@ -333,6 +333,7 @@ dependencies = [
  "async-trait",
  "awaken-contract",
  "awaken-ext-mcp",
+ "awaken-ext-permission",
  "awaken-runtime",
  "base64 0.22.1",
  "model-context-protocol",
