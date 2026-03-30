@@ -4,11 +4,12 @@ use crate::materialize::{load_asset_material, load_reference_material, run_scrip
 use crate::skill::{ScriptResult, Skill, SkillMeta, SkillResource, SkillResourceKind};
 use crate::skill_md::{SkillFrontmatter, parse_allowed_tools, parse_skill_md};
 use async_trait::async_trait;
+use awaken_contract::PeriodicRefresher;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use unicode_normalization::UnicodeNormalization;
 
@@ -249,13 +250,6 @@ fn write_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
     }
 }
 
-fn mutex_lock<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    match lock.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
-
 // ── FsSkillRegistryManager ──────────────────────────────────────────
 
 #[derive(Clone, Default)]
@@ -265,29 +259,10 @@ struct SkillRegistrySnapshot {
     warnings: Vec<SkillWarning>,
 }
 
-struct PeriodicRefreshRuntime {
-    stop_tx: Option<std::sync::mpsc::Sender<()>>,
-    join: std::thread::JoinHandle<()>,
-}
-
 struct SkillRegistryState {
     roots: Vec<PathBuf>,
     snapshot: RwLock<SkillRegistrySnapshot>,
-    periodic_refresh: Mutex<Option<PeriodicRefreshRuntime>>,
-}
-
-fn is_periodic_refresh_running(state: &SkillRegistryState) -> bool {
-    let mut runtime = mutex_lock(&state.periodic_refresh);
-    if runtime
-        .as_ref()
-        .is_some_and(|running| running.join.is_finished())
-    {
-        if let Some(finished) = runtime.take() {
-            let _ = finished.join.join();
-        }
-        return false;
-    }
-    runtime.is_some()
+    periodic_refresh: PeriodicRefresher,
 }
 
 type DiscoverSnapshot = (HashMap<String, Arc<dyn Skill>>, Vec<SkillWarning>);
@@ -334,29 +309,6 @@ fn apply_snapshot(
     version
 }
 
-fn refresh_state_blocking(state: &SkillRegistryState) -> Result<u64, SkillRegistryManagerError> {
-    let (skills, warnings) = discover_snapshot_from_roots(&state.roots)?;
-    Ok(apply_snapshot(state, skills, warnings))
-}
-
-fn periodic_refresh_loop(
-    state: Weak<SkillRegistryState>,
-    interval: Duration,
-    stop_rx: std::sync::mpsc::Receiver<()>,
-) {
-    loop {
-        match stop_rx.recv_timeout(interval) {
-            Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                let Some(state) = state.upgrade() else {
-                    break;
-                };
-                let _ = refresh_state_blocking(state.as_ref());
-            }
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct FsSkillRegistryManager {
     state: Arc<SkillRegistryState>,
@@ -365,13 +317,15 @@ pub struct FsSkillRegistryManager {
 impl std::fmt::Debug for FsSkillRegistryManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let snapshot = read_lock(&self.state.snapshot);
-        let periodic_running = is_periodic_refresh_running(self.state.as_ref());
         f.debug_struct("FsSkillRegistryManager")
             .field("roots", &self.state.roots.len())
             .field("skills", &snapshot.skills.len())
             .field("warnings", &snapshot.warnings.len())
             .field("version", &snapshot.version)
-            .field("periodic_refresh_running", &periodic_running)
+            .field(
+                "periodic_refresh_running",
+                &self.state.periodic_refresh.is_running(),
+            )
             .finish()
     }
 }
@@ -391,7 +345,7 @@ impl FsSkillRegistryManager {
             state: Arc::new(SkillRegistryState {
                 roots,
                 snapshot: RwLock::new(snapshot),
-                periodic_refresh: Mutex::new(None),
+                periodic_refresh: PeriodicRefresher::new(),
             }),
         })
     }
@@ -404,49 +358,37 @@ impl FsSkillRegistryManager {
         &self,
         interval: Duration,
     ) -> Result<(), SkillRegistryManagerError> {
-        if interval.is_zero() {
-            return Err(SkillRegistryManagerError::InvalidRefreshInterval);
-        }
-        let mut runtime = mutex_lock(&self.state.periodic_refresh);
-        if runtime
-            .as_ref()
-            .is_some_and(|running| !running.join.is_finished())
-        {
-            return Err(SkillRegistryManagerError::PeriodicRefreshAlreadyRunning);
-        }
-        if let Some(finished) = runtime.take() {
-            let _ = finished.join.join();
-        }
-        let (stop_tx, stop_rx) = std::sync::mpsc::channel();
         let weak_state = Arc::downgrade(&self.state);
-        let join = std::thread::Builder::new()
-            .name("awaken-skills-registry-refresh".to_string())
-            .spawn(move || periodic_refresh_loop(weak_state, interval, stop_rx))
-            .map_err(|e| SkillRegistryManagerError::Join(e.to_string()))?;
-        *runtime = Some(PeriodicRefreshRuntime {
-            stop_tx: Some(stop_tx),
-            join,
-        });
-        Ok(())
+        self.state
+            .periodic_refresh
+            .start(interval, move || {
+                let weak = weak_state.clone();
+                async move {
+                    let Some(state) = weak.upgrade() else {
+                        return;
+                    };
+                    if let Err(err) = refresh_state(state.as_ref()).await {
+                        tracing::warn!(error = %err, "FS skill periodic refresh failed");
+                    }
+                }
+            })
+            .map_err(|msg| match msg.as_str() {
+                m if m.contains("non-zero") => SkillRegistryManagerError::InvalidRefreshInterval,
+                m if m.contains("already running") => {
+                    SkillRegistryManagerError::PeriodicRefreshAlreadyRunning
+                }
+                _ => SkillRegistryManagerError::RuntimeUnavailable,
+            })
     }
 
     pub fn stop_periodic_refresh(&self) -> bool {
-        let runtime = {
-            let mut guard = mutex_lock(&self.state.periodic_refresh);
-            guard.take()
-        };
-        let Some(mut runtime) = runtime else {
-            return false;
-        };
-        if let Some(stop_tx) = runtime.stop_tx.take() {
-            let _ = stop_tx.send(());
-        }
-        let _ = runtime.join.join();
-        true
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(self.state.periodic_refresh.stop())
+        })
     }
 
     pub fn periodic_refresh_running(&self) -> bool {
-        is_periodic_refresh_running(self.state.as_ref())
+        self.state.periodic_refresh.is_running()
     }
 
     pub fn version(&self) -> u64 {

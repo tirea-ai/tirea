@@ -10,6 +10,7 @@ use crate::{
     SkillRegistryManagerError, SkillResource, SkillResourceKind,
 };
 use async_trait::async_trait;
+use awaken_contract::PeriodicRefresher;
 use awaken_ext_mcp::{
     McpError, McpPromptArgument, McpPromptEntry, McpPromptResult, McpResourceEntry,
     McpToolRegistryManager,
@@ -18,12 +19,8 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use tokio::runtime::Handle;
-use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
-use tokio::time::MissedTickBehavior;
 
 fn read_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
     match lock.read() {
@@ -34,13 +31,6 @@ fn read_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
 
 fn write_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
     match lock.write() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
-
-fn mutex_lock<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    match lock.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     }
@@ -568,15 +558,10 @@ struct McpPromptSkillRegistrySnapshot {
     skills: HashMap<String, Arc<dyn Skill>>,
 }
 
-struct PeriodicRefreshRuntime {
-    stop_tx: Option<oneshot::Sender<()>>,
-    join: JoinHandle<()>,
-}
-
 struct McpPromptSkillRegistryState {
     manager: Arc<McpToolRegistryManager>,
     snapshot: RwLock<McpPromptSkillRegistrySnapshot>,
-    periodic_refresh: Mutex<Option<PeriodicRefreshRuntime>>,
+    periodic_refresh: PeriodicRefresher,
 }
 
 async fn discover_snapshot_from_manager(
@@ -646,30 +631,6 @@ async fn refresh_state(
     Ok(apply_snapshot(state, skills))
 }
 
-async fn periodic_refresh_loop(
-    state: Weak<McpPromptSkillRegistryState>,
-    interval: Duration,
-    mut stop_rx: oneshot::Receiver<()>,
-) {
-    let mut ticker = tokio::time::interval(interval);
-    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    ticker.tick().await;
-
-    loop {
-        tokio::select! {
-            _ = &mut stop_rx => break,
-            _ = ticker.tick() => {
-                let Some(state) = state.upgrade() else {
-                    break;
-                };
-                if let Err(err) = refresh_state(state.as_ref()).await {
-                    tracing::warn!(error = %err, "MCP prompt skill periodic refresh failed");
-                }
-            }
-        }
-    }
-}
-
 /// Manages a registry of skills backed by MCP prompts.
 ///
 /// Discovers MCP prompts from a [`McpToolRegistryManager`] and wraps each as a
@@ -682,11 +643,13 @@ pub struct McpPromptSkillRegistryManager {
 impl std::fmt::Debug for McpPromptSkillRegistryManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let snapshot = read_lock(&self.state.snapshot);
-        let periodic_running = self.periodic_refresh_running();
         f.debug_struct("McpPromptSkillRegistryManager")
             .field("skills", &snapshot.skills.len())
             .field("version", &snapshot.version)
-            .field("periodic_refresh_running", &periodic_running)
+            .field(
+                "periodic_refresh_running",
+                &self.state.periodic_refresh.is_running(),
+            )
             .finish()
     }
 }
@@ -701,7 +664,7 @@ impl McpPromptSkillRegistryManager {
             state: Arc::new(McpPromptSkillRegistryState {
                 manager,
                 snapshot: RwLock::new(McpPromptSkillRegistrySnapshot { version: 1, skills }),
-                periodic_refresh: Mutex::new(None),
+                periodic_refresh: PeriodicRefresher::new(),
             }),
         })
     }
@@ -721,59 +684,37 @@ impl McpPromptSkillRegistryManager {
         &self,
         interval: Duration,
     ) -> Result<(), SkillRegistryManagerError> {
-        if interval.is_zero() {
-            return Err(SkillRegistryManagerError::InvalidRefreshInterval);
-        }
-
-        let handle =
-            Handle::try_current().map_err(|_| SkillRegistryManagerError::RuntimeUnavailable)?;
-        let mut runtime = mutex_lock(&self.state.periodic_refresh);
-        if runtime
-            .as_ref()
-            .is_some_and(|running| !running.join.is_finished())
-        {
-            return Err(SkillRegistryManagerError::PeriodicRefreshAlreadyRunning);
-        }
-
-        let (stop_tx, stop_rx) = oneshot::channel();
         let weak_state = Arc::downgrade(&self.state);
-        let join = handle.spawn(periodic_refresh_loop(weak_state, interval, stop_rx));
-        *runtime = Some(PeriodicRefreshRuntime {
-            stop_tx: Some(stop_tx),
-            join,
-        });
-        Ok(())
+        self.state
+            .periodic_refresh
+            .start(interval, move || {
+                let weak = weak_state.clone();
+                async move {
+                    let Some(state) = weak.upgrade() else {
+                        return;
+                    };
+                    if let Err(err) = refresh_state(state.as_ref()).await {
+                        tracing::warn!(error = %err, "MCP prompt skill periodic refresh failed");
+                    }
+                }
+            })
+            .map_err(|msg| match msg.as_str() {
+                m if m.contains("non-zero") => SkillRegistryManagerError::InvalidRefreshInterval,
+                m if m.contains("already running") => {
+                    SkillRegistryManagerError::PeriodicRefreshAlreadyRunning
+                }
+                _ => SkillRegistryManagerError::RuntimeUnavailable,
+            })
     }
 
     /// Stop the periodic refresh task. Returns true if it was running.
     pub async fn stop_periodic_refresh(&self) -> bool {
-        let runtime = {
-            let mut guard = mutex_lock(&self.state.periodic_refresh);
-            guard.take()
-        };
-
-        let Some(mut runtime) = runtime else {
-            return false;
-        };
-
-        if let Some(stop_tx) = runtime.stop_tx.take() {
-            let _ = stop_tx.send(());
-        }
-        let _ = runtime.join.await;
-        true
+        self.state.periodic_refresh.stop().await
     }
 
     /// Check whether the periodic refresh task is running.
     pub fn periodic_refresh_running(&self) -> bool {
-        let mut runtime = mutex_lock(&self.state.periodic_refresh);
-        if runtime
-            .as_ref()
-            .is_some_and(|running| running.join.is_finished())
-        {
-            *runtime = None;
-            return false;
-        }
-        runtime.is_some()
+        self.state.periodic_refresh.is_running()
     }
 }
 
@@ -823,8 +764,16 @@ mod tests {
     use mcp::transport::{McpServerConnectionConfig, ServerCapabilities, TransportTypeId};
     use serde_json::json;
     use std::collections::BTreeMap;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::mpsc;
+
+    fn mutex_lock<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+        match lock.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
 
     #[derive(Debug)]
     struct MutablePromptTransport {

@@ -4,6 +4,7 @@ pub mod config_loader;
 pub mod contract;
 mod error;
 pub mod model;
+pub mod periodic_refresh;
 pub mod registry_spec;
 pub mod state;
 pub mod thread;
@@ -50,3 +51,6 @@ pub use contract::tool_schema::{generate_tool_schema, sanitize_for_llm, validate
 
 // ── thread ──
 pub use thread::{Thread, ThreadMetadata};
+
+// ── periodic refresh ──
+pub use periodic_refresh::PeriodicRefresher;

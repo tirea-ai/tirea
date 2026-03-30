@@ -1,10 +1,11 @@
 //! MCP tool registry manager: server lifecycle, tool discovery, periodic refresh.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
+use awaken_contract::PeriodicRefresher;
 use awaken_contract::contract::progress::ProgressStatus;
 use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult,
@@ -12,10 +13,7 @@ use awaken_contract::contract::tool::{
 use mcp::McpToolDefinition;
 use mcp::transport::{McpTransportError, ServerCapabilities, TransportTypeId};
 use serde_json::Value;
-use tokio::runtime::Handle;
-use tokio::sync::{mpsc, oneshot};
-use tokio::task::JoinHandle;
-use tokio::time::MissedTickBehavior;
+use tokio::sync::mpsc;
 
 use crate::config::McpServerConnectionConfig;
 use crate::error::McpError;
@@ -261,16 +259,11 @@ struct McpRegistrySnapshot {
     tools: HashMap<String, Arc<dyn Tool>>,
 }
 
-struct PeriodicRefreshRuntime {
-    stop_tx: Option<oneshot::Sender<()>>,
-    join: JoinHandle<()>,
-}
-
 struct McpRegistryState {
     servers: Vec<McpServerRuntime>,
     snapshot: RwLock<McpRegistrySnapshot>,
     refresh_health: RwLock<McpRefreshHealth>,
-    periodic_refresh: Mutex<Option<PeriodicRefreshRuntime>>,
+    periodic_refresh: PeriodicRefresher,
 }
 
 fn read_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
@@ -282,13 +275,6 @@ fn read_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
 
 fn write_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
     match lock.write() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
-
-fn mutex_lock<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    match lock.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     }
@@ -311,18 +297,6 @@ fn server_supports_prompts(capabilities: Option<&ServerCapabilities>) -> bool {
 
 fn server_supports_resources(capabilities: Option<&ServerCapabilities>) -> bool {
     capabilities.is_none_or(|capabilities| capabilities.resources.is_some())
-}
-
-fn is_periodic_refresh_running(state: &McpRegistryState) -> bool {
-    let mut runtime = mutex_lock(&state.periodic_refresh);
-    if runtime
-        .as_ref()
-        .is_some_and(|running| running.join.is_finished())
-    {
-        *runtime = None;
-        return false;
-    }
-    runtime.is_some()
 }
 
 async fn discover_tools(
@@ -381,30 +355,6 @@ async fn refresh_state(state: &McpRegistryState) -> Result<u64, McpError> {
     }
 }
 
-async fn periodic_refresh_loop(
-    state: Weak<McpRegistryState>,
-    interval: Duration,
-    mut stop_rx: oneshot::Receiver<()>,
-) {
-    let mut ticker = tokio::time::interval(interval);
-    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    ticker.tick().await;
-
-    loop {
-        tokio::select! {
-            _ = &mut stop_rx => break,
-            _ = ticker.tick() => {
-                let Some(state) = state.upgrade() else {
-                    break;
-                };
-                if let Err(err) = refresh_state(state.as_ref()).await {
-                    tracing::warn!(error = %err, "MCP periodic refresh failed");
-                }
-            }
-        }
-    }
-}
-
 // ── McpToolRegistryManager ──
 
 /// Dynamic MCP registry manager.
@@ -419,12 +369,14 @@ pub struct McpToolRegistryManager {
 impl std::fmt::Debug for McpToolRegistryManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let snapshot = read_lock(&self.state.snapshot);
-        let periodic_running = is_periodic_refresh_running(self.state.as_ref());
         f.debug_struct("McpToolRegistryManager")
             .field("servers", &self.state.servers.len())
             .field("tools", &snapshot.tools.len())
             .field("version", &snapshot.version)
-            .field("periodic_refresh_running", &periodic_running)
+            .field(
+                "periodic_refresh_running",
+                &self.state.periodic_refresh.is_running(),
+            )
             .finish()
     }
 }
@@ -472,7 +424,7 @@ impl McpToolRegistryManager {
                     last_error: None,
                     consecutive_failures: 0,
                 }),
-                periodic_refresh: Mutex::new(None),
+                periodic_refresh: PeriodicRefresher::new(),
             }),
         })
     }
@@ -507,49 +459,33 @@ impl McpToolRegistryManager {
     }
 
     pub fn start_periodic_refresh(&self, interval: Duration) -> Result<(), McpError> {
-        if interval.is_zero() {
-            return Err(McpError::InvalidRefreshInterval);
-        }
-
-        let handle = Handle::try_current().map_err(|_| McpError::RuntimeUnavailable)?;
-        let mut runtime = mutex_lock(&self.state.periodic_refresh);
-        if runtime
-            .as_ref()
-            .is_some_and(|running| !running.join.is_finished())
-        {
-            return Err(McpError::PeriodicRefreshAlreadyRunning);
-        }
-
-        let (stop_tx, stop_rx) = oneshot::channel();
         let weak_state = Arc::downgrade(&self.state);
-        let join = handle.spawn(periodic_refresh_loop(weak_state, interval, stop_rx));
-
-        *runtime = Some(PeriodicRefreshRuntime {
-            stop_tx: Some(stop_tx),
-            join,
-        });
-        Ok(())
+        self.state
+            .periodic_refresh
+            .start(interval, move || {
+                let weak = weak_state.clone();
+                async move {
+                    let Some(state) = weak.upgrade() else {
+                        return;
+                    };
+                    if let Err(err) = refresh_state(state.as_ref()).await {
+                        tracing::warn!(error = %err, "MCP periodic refresh failed");
+                    }
+                }
+            })
+            .map_err(|msg| match msg.as_str() {
+                m if m.contains("non-zero") => McpError::InvalidRefreshInterval,
+                m if m.contains("already running") => McpError::PeriodicRefreshAlreadyRunning,
+                _ => McpError::RuntimeUnavailable,
+            })
     }
 
     pub async fn stop_periodic_refresh(&self) -> bool {
-        let runtime = {
-            let mut guard = mutex_lock(&self.state.periodic_refresh);
-            guard.take()
-        };
-
-        let Some(mut runtime) = runtime else {
-            return false;
-        };
-
-        if let Some(stop_tx) = runtime.stop_tx.take() {
-            let _ = stop_tx.send(());
-        }
-        let _ = runtime.join.await;
-        true
+        self.state.periodic_refresh.stop().await
     }
 
     pub fn periodic_refresh_running(&self) -> bool {
-        is_periodic_refresh_running(self.state.as_ref())
+        self.state.periodic_refresh.is_running()
     }
 
     pub fn registry(&self) -> McpToolRegistry {
@@ -697,12 +633,14 @@ pub struct McpToolRegistry {
 impl std::fmt::Debug for McpToolRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let snapshot = read_lock(&self.state.snapshot);
-        let periodic_running = is_periodic_refresh_running(self.state.as_ref());
         f.debug_struct("McpToolRegistry")
             .field("servers", &self.state.servers.len())
             .field("tools", &snapshot.tools.len())
             .field("version", &snapshot.version)
-            .field("periodic_refresh_running", &periodic_running)
+            .field(
+                "periodic_refresh_running",
+                &self.state.periodic_refresh.is_running(),
+            )
             .finish()
     }
 }
