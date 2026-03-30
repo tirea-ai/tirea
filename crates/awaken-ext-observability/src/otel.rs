@@ -347,6 +347,7 @@ mod tests {
             inferences: vec![sample_genai_span()],
             tools: vec![sample_tool_span()],
             session_duration_ms: 5000,
+            ..Default::default()
         });
     }
 }

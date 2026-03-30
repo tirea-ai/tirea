@@ -68,11 +68,49 @@ impl ToolSpan {
     }
 }
 
+/// Span for tool suspension/resume events (HITL decisions).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuspensionSpan {
+    pub tool_call_id: String,
+    pub tool_name: String,
+    /// "suspended" or "resumed"
+    pub action: String,
+    /// Resume mode if resumed (e.g., "use_decision", "replay", "pass_decision", "cancel")
+    pub resume_mode: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub timestamp_ms: u64,
+}
+
+/// Span for agent handoff events.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandoffSpan {
+    pub from_agent_id: String,
+    pub to_agent_id: String,
+    pub reason: Option<String>,
+    pub timestamp_ms: u64,
+}
+
+/// Span for A2A delegation events.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegationSpan {
+    pub parent_run_id: String,
+    pub child_run_id: Option<String>,
+    pub target_agent_id: String,
+    pub tool_call_id: String,
+    pub duration_ms: Option<u64>,
+    pub success: bool,
+    pub error_message: Option<String>,
+    pub timestamp_ms: u64,
+}
+
 /// Aggregated metrics for an agent session.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentMetrics {
     pub inferences: Vec<GenAISpan>,
     pub tools: Vec<ToolSpan>,
+    pub suspensions: Vec<SuspensionSpan>,
+    pub handoffs: Vec<HandoffSpan>,
+    pub delegations: Vec<DelegationSpan>,
     pub session_duration_ms: u64,
 }
 
@@ -121,6 +159,22 @@ impl AgentMetrics {
 
     pub fn tool_failures(&self) -> usize {
         self.tools.iter().filter(|t| !t.is_success()).count()
+    }
+
+    pub fn total_suspensions(&self) -> usize {
+        self.suspensions.len()
+    }
+
+    pub fn total_handoffs(&self) -> usize {
+        self.handoffs.len()
+    }
+
+    pub fn total_delegations(&self) -> usize {
+        self.delegations.len()
+    }
+
+    pub fn successful_delegations(&self) -> usize {
+        self.delegations.iter().filter(|d| d.success).count()
     }
 
     /// Inference statistics grouped by `(model, provider)`, sorted by model name.
@@ -445,11 +499,7 @@ mod tests {
 
     #[test]
     fn empty_spans_edge_case() {
-        let m = AgentMetrics {
-            inferences: vec![],
-            tools: vec![],
-            session_duration_ms: 0,
-        };
+        let m = AgentMetrics::default();
         assert_eq!(m.total_input_tokens(), 0);
         assert_eq!(m.total_output_tokens(), 0);
         assert_eq!(m.inference_count(), 0);
@@ -498,5 +548,170 @@ mod tests {
     fn tool_span_is_success_false() {
         let span = make_tool_span("write", true);
         assert!(!span.is_success());
+    }
+
+    // ---- New span type serde roundtrips ----
+
+    #[test]
+    fn suspension_span_serde_roundtrip() {
+        let span = SuspensionSpan {
+            tool_call_id: "c1".to_string(),
+            tool_name: "search".to_string(),
+            action: "suspended".to_string(),
+            resume_mode: Some("use_decision".to_string()),
+            duration_ms: Some(5000),
+            timestamp_ms: 1000,
+        };
+        let json = serde_json::to_string(&span).unwrap();
+        let restored: SuspensionSpan = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.tool_call_id, "c1");
+        assert_eq!(restored.action, "suspended");
+        assert_eq!(restored.resume_mode.as_deref(), Some("use_decision"));
+        assert_eq!(restored.duration_ms, Some(5000));
+    }
+
+    #[test]
+    fn handoff_span_serde_roundtrip() {
+        let span = HandoffSpan {
+            from_agent_id: "agent-a".to_string(),
+            to_agent_id: "agent-b".to_string(),
+            reason: Some("escalation".to_string()),
+            timestamp_ms: 2000,
+        };
+        let json = serde_json::to_string(&span).unwrap();
+        let restored: HandoffSpan = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.from_agent_id, "agent-a");
+        assert_eq!(restored.to_agent_id, "agent-b");
+        assert_eq!(restored.reason.as_deref(), Some("escalation"));
+    }
+
+    #[test]
+    fn delegation_span_serde_roundtrip() {
+        let span = DelegationSpan {
+            parent_run_id: "run-1".to_string(),
+            child_run_id: Some("run-2".to_string()),
+            target_agent_id: "worker".to_string(),
+            tool_call_id: "c1".to_string(),
+            duration_ms: Some(500),
+            success: true,
+            error_message: None,
+            timestamp_ms: 3000,
+        };
+        let json = serde_json::to_string(&span).unwrap();
+        let restored: DelegationSpan = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.parent_run_id, "run-1");
+        assert_eq!(restored.child_run_id.as_deref(), Some("run-2"));
+        assert!(restored.success);
+        assert!(restored.error_message.is_none());
+    }
+
+    // ---- AgentMetrics new helpers ----
+
+    #[test]
+    fn agent_metrics_total_suspensions() {
+        let m = AgentMetrics {
+            suspensions: vec![
+                SuspensionSpan {
+                    tool_call_id: "c1".to_string(),
+                    tool_name: "s".to_string(),
+                    action: "suspended".to_string(),
+                    resume_mode: None,
+                    duration_ms: None,
+                    timestamp_ms: 0,
+                },
+                SuspensionSpan {
+                    tool_call_id: "c1".to_string(),
+                    tool_name: "s".to_string(),
+                    action: "resumed".to_string(),
+                    resume_mode: Some("use_decision".to_string()),
+                    duration_ms: Some(100),
+                    timestamp_ms: 100,
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(m.total_suspensions(), 2);
+    }
+
+    #[test]
+    fn agent_metrics_total_delegations() {
+        let m = AgentMetrics {
+            delegations: vec![
+                DelegationSpan {
+                    parent_run_id: "r1".to_string(),
+                    child_run_id: None,
+                    target_agent_id: "w1".to_string(),
+                    tool_call_id: "c1".to_string(),
+                    duration_ms: None,
+                    success: true,
+                    error_message: None,
+                    timestamp_ms: 0,
+                },
+                DelegationSpan {
+                    parent_run_id: "r1".to_string(),
+                    child_run_id: None,
+                    target_agent_id: "w2".to_string(),
+                    tool_call_id: "c2".to_string(),
+                    duration_ms: None,
+                    success: false,
+                    error_message: Some("timeout".to_string()),
+                    timestamp_ms: 0,
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(m.total_delegations(), 2);
+    }
+
+    #[test]
+    fn agent_metrics_successful_delegations() {
+        let m = AgentMetrics {
+            delegations: vec![
+                DelegationSpan {
+                    parent_run_id: "r1".to_string(),
+                    child_run_id: None,
+                    target_agent_id: "w1".to_string(),
+                    tool_call_id: "c1".to_string(),
+                    duration_ms: None,
+                    success: true,
+                    error_message: None,
+                    timestamp_ms: 0,
+                },
+                DelegationSpan {
+                    parent_run_id: "r1".to_string(),
+                    child_run_id: None,
+                    target_agent_id: "w2".to_string(),
+                    tool_call_id: "c2".to_string(),
+                    duration_ms: None,
+                    success: false,
+                    error_message: Some("timeout".to_string()),
+                    timestamp_ms: 0,
+                },
+                DelegationSpan {
+                    parent_run_id: "r1".to_string(),
+                    child_run_id: Some("r3".to_string()),
+                    target_agent_id: "w3".to_string(),
+                    tool_call_id: "c3".to_string(),
+                    duration_ms: Some(200),
+                    success: true,
+                    error_message: None,
+                    timestamp_ms: 0,
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(m.successful_delegations(), 2);
+    }
+
+    #[test]
+    fn agent_metrics_default_has_empty_new_fields() {
+        let m = AgentMetrics::default();
+        assert!(m.suspensions.is_empty());
+        assert!(m.handoffs.is_empty());
+        assert!(m.delegations.is_empty());
+        assert_eq!(m.total_suspensions(), 0);
+        assert_eq!(m.total_handoffs(), 0);
+        assert_eq!(m.total_delegations(), 0);
+        assert_eq!(m.successful_delegations(), 0);
     }
 }

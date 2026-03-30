@@ -3,6 +3,7 @@
 //! Captures per-inference and per-tool metrics via the Phase system,
 //! forwarding them to a pluggable [`MetricsSink`].
 
+mod composite;
 mod metrics;
 mod plugin;
 mod sink;
@@ -11,7 +12,8 @@ mod stats;
 #[cfg(feature = "otel")]
 pub mod otel;
 
-pub use metrics::{AgentMetrics, GenAISpan, ToolSpan};
+pub use composite::{CompositeSink, CompositeSinkBuilder};
+pub use metrics::{AgentMetrics, DelegationSpan, GenAISpan, HandoffSpan, SuspensionSpan, ToolSpan};
 pub use plugin::{OBSERVABILITY_PLUGIN_ID, ObservabilityPlugin};
 pub use sink::{InMemorySink, MetricsSink};
 
@@ -182,6 +184,7 @@ mod tests {
                 },
             ],
             session_duration_ms: 500,
+            ..Default::default()
         };
         assert_eq!(m.total_input_tokens(), 15);
         assert_eq!(m.total_output_tokens(), 20);

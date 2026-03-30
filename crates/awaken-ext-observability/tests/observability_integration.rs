@@ -6,7 +6,8 @@
 //! exercise cross-type integration through the public surface.
 
 use awaken_ext_observability::{
-    AgentMetrics, GenAISpan, InMemorySink, MetricsSink, ObservabilityPlugin, ToolSpan,
+    AgentMetrics, CompositeSink, DelegationSpan, GenAISpan, HandoffSpan, InMemorySink, MetricsSink,
+    ObservabilityPlugin, SuspensionSpan, ToolSpan,
 };
 use awaken_runtime::plugins::Plugin;
 
@@ -143,6 +144,7 @@ fn sink_records_session_duration_on_run_end() {
         inferences: vec![],
         tools: vec![],
         session_duration_ms: 5000,
+        ..Default::default()
     };
     sink.on_run_end(&run_metrics);
 
@@ -197,6 +199,7 @@ fn full_agent_session_simulation() {
         inferences: vec![],
         tools: vec![],
         session_duration_ms: 3000,
+        ..Default::default()
     };
     sink.on_run_end(&final_metrics);
 
@@ -222,6 +225,7 @@ fn stats_by_model_groups_by_model_and_provider() {
         ],
         tools: vec![],
         session_duration_ms: 0,
+        ..Default::default()
     };
 
     let stats = m.stats_by_model();
@@ -251,6 +255,7 @@ fn stats_by_model_includes_cache_tokens() {
         ],
         tools: vec![],
         session_duration_ms: 0,
+        ..Default::default()
     };
 
     let stats = m.stats_by_model();
@@ -283,6 +288,7 @@ fn stats_by_tool_groups_and_counts_failures() {
             make_tool_span("write", false),
         ],
         session_duration_ms: 0,
+        ..Default::default()
     };
 
     let stats = m.stats_by_tool();
@@ -334,6 +340,7 @@ fn total_durations_accumulate() {
             },
         ],
         session_duration_ms: 1000,
+        ..Default::default()
     };
 
     assert_eq!(m.total_inference_duration_ms(), 500);
@@ -351,6 +358,7 @@ fn error_spans_counted_in_inference_count_but_no_tokens() {
         ],
         tools: vec![],
         session_duration_ms: 0,
+        ..Default::default()
     };
 
     assert_eq!(m.inference_count(), 2);
@@ -377,6 +385,7 @@ fn agent_metrics_serde_roundtrip() {
             make_tool_span("write", true),
         ],
         session_duration_ms: 5000,
+        ..Default::default()
     };
 
     let json = serde_json::to_string(&metrics).unwrap();
@@ -448,6 +457,7 @@ fn all_none_token_fields_sum_to_zero() {
         }],
         tools: vec![],
         session_duration_ms: 0,
+        ..Default::default()
     };
 
     assert_eq!(m.total_input_tokens(), 0);
@@ -467,6 +477,7 @@ fn zero_duration_spans_handled() {
             ..make_tool_span("t", false)
         }],
         session_duration_ms: 0,
+        ..Default::default()
     };
 
     assert_eq!(m.total_inference_duration_ms(), 0);
@@ -488,4 +499,78 @@ fn default_metrics_are_all_zero() {
     assert_eq!(m.tool_failures(), 0);
     assert!(m.stats_by_model().is_empty());
     assert!(m.stats_by_tool().is_empty());
+}
+
+// ── CompositeSink integration ─────────────────────────────────────
+
+#[test]
+fn composite_sink_with_in_memory_captures_all_events() {
+    use std::sync::Arc;
+
+    let sink_a = Arc::new(InMemorySink::new());
+    let sink_b = Arc::new(InMemorySink::new());
+    let composite = CompositeSink::new(vec![sink_a.clone(), sink_b.clone()]);
+
+    // Inference
+    composite.on_inference(&make_genai_span("gpt-4", "openai", 100, 50));
+    composite.on_inference(&make_genai_span("claude-3", "anthropic", 200, 75));
+
+    // Tools
+    composite.on_tool(&make_tool_span("search", false));
+    composite.on_tool(&make_tool_span("write", true));
+
+    // Suspension
+    composite.on_suspension(&SuspensionSpan {
+        tool_call_id: "c1".into(),
+        tool_name: "search".into(),
+        action: "suspended".into(),
+        resume_mode: None,
+        duration_ms: None,
+        timestamp_ms: 1000,
+    });
+
+    // Handoff
+    composite.on_handoff(&HandoffSpan {
+        from_agent_id: "agent-a".into(),
+        to_agent_id: "agent-b".into(),
+        reason: Some("escalation".into()),
+        timestamp_ms: 2000,
+    });
+
+    // Delegation
+    composite.on_delegation(&DelegationSpan {
+        parent_run_id: "run-1".into(),
+        child_run_id: Some("run-2".into()),
+        target_agent_id: "worker".into(),
+        tool_call_id: "c1".into(),
+        duration_ms: Some(500),
+        success: true,
+        error_message: None,
+        timestamp_ms: 3000,
+    });
+
+    // Run end
+    composite.on_run_end(&AgentMetrics {
+        session_duration_ms: 5000,
+        ..Default::default()
+    });
+
+    // Verify both sinks received all events
+    for sink in [&sink_a, &sink_b] {
+        let m = sink.metrics();
+        assert_eq!(m.inference_count(), 2);
+        assert_eq!(m.tool_count(), 2);
+        assert_eq!(m.tool_failures(), 1);
+        assert_eq!(m.total_suspensions(), 1);
+        assert_eq!(m.total_handoffs(), 1);
+        assert_eq!(m.total_delegations(), 1);
+        assert_eq!(m.successful_delegations(), 1);
+        assert_eq!(m.total_input_tokens(), 300);
+        assert_eq!(m.total_output_tokens(), 125);
+        assert_eq!(m.session_duration_ms, 5000);
+    }
+
+    // Flush and shutdown should succeed
+    assert!(composite.flush().is_ok());
+    assert!(composite.shutdown().is_ok());
 }

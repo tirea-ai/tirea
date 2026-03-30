@@ -1,12 +1,30 @@
 use std::sync::{Arc, Mutex};
 
-use super::metrics::{AgentMetrics, GenAISpan, ToolSpan};
+use super::metrics::{
+    AgentMetrics, DelegationSpan, GenAISpan, HandoffSpan, SuspensionSpan, ToolSpan,
+};
 
 /// Trait for consuming telemetry data.
 pub trait MetricsSink: Send + Sync {
     fn on_inference(&self, span: &GenAISpan);
     fn on_tool(&self, span: &ToolSpan);
     fn on_run_end(&self, metrics: &AgentMetrics);
+
+    /// Called when a tool execution is suspended (HITL) or resumed.
+    fn on_suspension(&self, _span: &SuspensionSpan) {}
+    /// Called on agent handoff events.
+    fn on_handoff(&self, _span: &HandoffSpan) {}
+    /// Called on A2A delegation events.
+    fn on_delegation(&self, _span: &DelegationSpan) {}
+
+    /// Flush any buffered data. Returns `Ok(())` by default.
+    fn flush(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Ok(())
+    }
+    /// Graceful shutdown. Returns `Ok(())` by default.
+    fn shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Ok(())
+    }
 }
 
 /// In-memory sink for testing and inspection.
@@ -36,6 +54,18 @@ impl MetricsSink for InMemorySink {
 
     fn on_run_end(&self, metrics: &AgentMetrics) {
         self.inner.lock().unwrap().session_duration_ms = metrics.session_duration_ms;
+    }
+
+    fn on_suspension(&self, span: &SuspensionSpan) {
+        self.inner.lock().unwrap().suspensions.push(span.clone());
+    }
+
+    fn on_handoff(&self, span: &HandoffSpan) {
+        self.inner.lock().unwrap().handoffs.push(span.clone());
+    }
+
+    fn on_delegation(&self, span: &DelegationSpan) {
+        self.inner.lock().unwrap().delegations.push(span.clone());
     }
 }
 
@@ -109,9 +139,8 @@ mod tests {
     fn in_memory_sink_records_session_duration() {
         let sink = InMemorySink::new();
         let run_metrics = AgentMetrics {
-            inferences: Vec::new(),
-            tools: Vec::new(),
             session_duration_ms: 5000,
+            ..Default::default()
         };
         sink.on_run_end(&run_metrics);
 
@@ -156,6 +185,75 @@ mod tests {
         let gpt = stats.iter().find(|s| s.model == "gpt-4").unwrap();
         assert_eq!(gpt.inference_count, 2);
         assert_eq!(gpt.input_tokens, 300);
+    }
+
+    #[test]
+    fn in_memory_sink_stores_suspensions() {
+        let sink = InMemorySink::new();
+        sink.on_suspension(&SuspensionSpan {
+            tool_call_id: "c1".to_string(),
+            tool_name: "search".to_string(),
+            action: "suspended".to_string(),
+            resume_mode: None,
+            duration_ms: None,
+            timestamp_ms: 1000,
+        });
+        sink.on_suspension(&SuspensionSpan {
+            tool_call_id: "c1".to_string(),
+            tool_name: "search".to_string(),
+            action: "resumed".to_string(),
+            resume_mode: Some("use_decision".to_string()),
+            duration_ms: Some(5000),
+            timestamp_ms: 6000,
+        });
+
+        let metrics = sink.metrics();
+        assert_eq!(metrics.total_suspensions(), 2);
+        assert_eq!(metrics.suspensions[0].action, "suspended");
+        assert_eq!(metrics.suspensions[1].action, "resumed");
+    }
+
+    #[test]
+    fn in_memory_sink_stores_handoffs() {
+        let sink = InMemorySink::new();
+        sink.on_handoff(&HandoffSpan {
+            from_agent_id: "agent-a".to_string(),
+            to_agent_id: "agent-b".to_string(),
+            reason: Some("escalation".to_string()),
+            timestamp_ms: 1000,
+        });
+
+        let metrics = sink.metrics();
+        assert_eq!(metrics.total_handoffs(), 1);
+        assert_eq!(metrics.handoffs[0].from_agent_id, "agent-a");
+        assert_eq!(metrics.handoffs[0].to_agent_id, "agent-b");
+    }
+
+    #[test]
+    fn in_memory_sink_stores_delegations() {
+        let sink = InMemorySink::new();
+        sink.on_delegation(&DelegationSpan {
+            parent_run_id: "run-1".to_string(),
+            child_run_id: Some("run-2".to_string()),
+            target_agent_id: "worker".to_string(),
+            tool_call_id: "c1".to_string(),
+            duration_ms: Some(500),
+            success: true,
+            error_message: None,
+            timestamp_ms: 3000,
+        });
+
+        let metrics = sink.metrics();
+        assert_eq!(metrics.total_delegations(), 1);
+        assert_eq!(metrics.delegations[0].target_agent_id, "worker");
+        assert!(metrics.delegations[0].success);
+    }
+
+    #[test]
+    fn flush_and_shutdown_default_impls_succeed() {
+        let sink = InMemorySink::new();
+        assert!(sink.flush().is_ok());
+        assert!(sink.shutdown().is_ok());
     }
 
     #[test]
