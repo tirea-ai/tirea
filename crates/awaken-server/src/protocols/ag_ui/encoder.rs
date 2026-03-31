@@ -830,6 +830,224 @@ mod tests {
         );
     }
 
+    #[test]
+    fn frontend_tool_approval_allow_flow() {
+        // Simulates: LLM calls frontend tool → suspend → user approves →
+        // resume with result → LLM continues
+        let mut enc = AgUiEncoder::new();
+        let mut all = Vec::new();
+
+        // Step 1: Run starts, LLM calls frontend tool
+        all.extend(enc.on_agent_event(&AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: None,
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::StepStart {
+            message_id: "m1".into(),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "Let me add that trip.".into(),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::ToolCallStart {
+            id: "tc1".into(),
+            name: "add_trips".into(),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::ToolCallDelta {
+            id: "tc1".into(),
+            args_delta: r#"{"trips":[{"name":"Rome"}]}"#.into(),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::ToolCallReady {
+            id: "tc1".into(),
+            name: "add_trips".into(),
+            arguments: serde_json::json!({"trips": [{"name": "Rome"}]}),
+        }));
+        // FrontEndTool suspends: ToolCallDone(Pending) emits nothing
+        all.extend(enc.on_agent_event(&AgentEvent::ToolCallDone {
+            id: "tc1".into(),
+            message_id: "m1".into(),
+            result: ToolResult::suspended("add_trips", "awaiting approval"),
+            outcome: ToolCallOutcome::Suspended,
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::StepEnd));
+        // Orchestrator emits RunFinish(Suspended)
+        all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: None,
+            termination: TerminationReason::Suspended,
+        }));
+
+        let types: Vec<&str> = all.iter().map(event_type_name).collect();
+        // Must have: RUN_STARTED, TOOL_CALL_START, TOOL_CALL_ARGS, TOOL_CALL_END, RUN_FINISHED(interrupt)
+        assert!(types.contains(&"RUN_STARTED"));
+        assert!(types.contains(&"TOOL_CALL_START"));
+        assert!(types.contains(&"TOOL_CALL_ARGS"));
+        assert!(types.contains(&"TOOL_CALL_END"));
+        assert!(types.contains(&"RUN_FINISHED")); // with interrupt
+
+        // Step 2: User approves → resume
+        all.extend(enc.on_agent_event(&AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: None,
+        }));
+        // ToolCallResumed with approval result
+        all.extend(enc.on_agent_event(&AgentEvent::ToolCallResumed {
+            target_id: "tc1".into(),
+            result: serde_json::json!({"approved": true, "data": {"added": 1}}),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::StepStart {
+            message_id: "m2".into(),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "Trip to Rome added!".into(),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::StepEnd));
+        all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: None,
+            termination: TerminationReason::NaturalEnd,
+        }));
+
+        let types: Vec<&str> = all.iter().map(event_type_name).collect();
+        // Two RUN_STARTED (original + resume), two RUN_FINISHED (interrupt + natural)
+        assert_eq!(types.iter().filter(|t| **t == "RUN_STARTED").count(), 2);
+        assert_eq!(types.iter().filter(|t| **t == "RUN_FINISHED").count(), 2);
+        // The resumed TOOL_CALL_RESULT should appear
+        assert!(types.contains(&"TOOL_CALL_RESULT"));
+        // Final text should appear
+        assert!(all.iter().any(|e| matches!(
+            e,
+            Event::TextMessageContent { delta, .. } if delta.contains("Rome added")
+        )));
+    }
+
+    #[test]
+    fn frontend_tool_approval_deny_flow() {
+        // Simulates: LLM calls frontend tool → suspend → user denies →
+        // resume with denial → LLM explains
+        let mut enc = AgUiEncoder::new();
+        let mut all = Vec::new();
+
+        // Step 1: tool call + suspend
+        all.extend(enc.on_agent_event(&AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: None,
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::StepStart {
+            message_id: "m1".into(),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::ToolCallStart {
+            id: "tc1".into(),
+            name: "add_trips".into(),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::ToolCallReady {
+            id: "tc1".into(),
+            name: "add_trips".into(),
+            arguments: serde_json::json!({"trips": []}),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::StepEnd));
+        all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: None,
+            termination: TerminationReason::Suspended,
+        }));
+
+        // Step 2: User denies
+        all.extend(enc.on_agent_event(&AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: None,
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::ToolCallResumed {
+            target_id: "tc1".into(),
+            result: serde_json::json!({"approved": false}),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::StepStart {
+            message_id: "m2".into(),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "Trip cancelled.".into(),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::StepEnd));
+        all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: None,
+            termination: TerminationReason::NaturalEnd,
+        }));
+
+        let types: Vec<&str> = all.iter().map(event_type_name).collect();
+        assert_eq!(types.iter().filter(|t| **t == "RUN_STARTED").count(), 2);
+        assert_eq!(types.iter().filter(|t| **t == "RUN_FINISHED").count(), 2);
+        // Denial ToolCallResumed should produce a TOOL_CALL_RESULT
+        assert!(types.contains(&"TOOL_CALL_RESULT"));
+        // Explanation text
+        assert!(all.iter().any(|e| matches!(
+            e,
+            Event::TextMessageContent { delta, .. } if delta.contains("cancelled")
+        )));
+    }
+
+    #[test]
+    fn auto_cancel_suspended_run_on_new_message() {
+        // Simulates: tool suspended → user sends new message → old run cancelled →
+        // new run starts fresh
+        let mut enc = AgUiEncoder::new();
+        let mut all = Vec::new();
+
+        // Step 1: tool call + suspend
+        all.extend(enc.on_agent_event(&AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: None,
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::StepStart {
+            message_id: "m1".into(),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::ToolCallStart {
+            id: "tc1".into(),
+            name: "add_trips".into(),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::ToolCallReady {
+            id: "tc1".into(),
+            name: "add_trips".into(),
+            arguments: serde_json::json!({}),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::StepEnd));
+        all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: None,
+            termination: TerminationReason::Suspended,
+        }));
+
+        // Step 2: old run gets cancelled (auto-cancel on new submit)
+        all.extend(enc.on_agent_event(&AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: None,
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: None,
+            termination: TerminationReason::Cancelled,
+        }));
+
+        let types: Vec<&str> = all.iter().map(event_type_name).collect();
+        // Should have 3 RUN_STARTED total is wrong—cancelled run doesn't start fresh.
+        // Actually: 2 RUN_STARTED (original + resume-for-cancel), 2 RUN_FINISHED (interrupt + cancelled)
+        let started_count = types.iter().filter(|t| **t == "RUN_STARTED").count();
+        let finished_count = types.iter().filter(|t| **t == "RUN_FINISHED").count();
+        assert_eq!(started_count, 2, "types: {types:?}");
+        assert_eq!(finished_count, 2, "types: {types:?}");
+    }
+
     // ── State machine and event ordering tests ─────────────────────────
 
     /// Helper: extract AG-UI event type name from an Event variant.

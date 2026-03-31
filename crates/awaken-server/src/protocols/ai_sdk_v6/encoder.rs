@@ -81,8 +81,13 @@ impl AiSdkEncoder {
     }
 
     pub fn on_agent_event(&mut self, ev: &AgentEvent) -> Vec<UIStreamEvent> {
+        // A RunStart after a Suspended RunFinish signals resume — reset the guard.
         if self.guard.is_finished() {
-            return Vec::new();
+            if matches!(ev, AgentEvent::RunStart { .. }) {
+                self.guard = crate::protocols::shared::TerminalGuard::new();
+            } else {
+                return Vec::new();
+            }
         }
 
         match ev {
@@ -878,5 +883,133 @@ mod tests {
         let json = serde_json::to_string(&events[0]).unwrap();
         assert!(json.contains("aaa111"));
         assert!(!json.contains("bbb"));
+    }
+
+    // ── ToolCallResumed tests ────────────────────────────────────────
+
+    #[test]
+    fn tool_call_resumed_success_emits_output_resumed() {
+        let mut enc = AiSdkEncoder::new();
+        let events = enc.on_agent_event(&AgentEvent::ToolCallResumed {
+            target_id: "tc1".into(),
+            result: serde_json::json!({"approved": true, "data": "trip added"}),
+        });
+        assert_eq!(events.len(), 1);
+        let json = serde_json::to_string(&events[0]).unwrap();
+        assert!(json.contains("tc1"));
+        assert!(json.contains("trip added"));
+    }
+
+    #[test]
+    fn tool_call_resumed_denied_emits_output_denied() {
+        let mut enc = AiSdkEncoder::new();
+        let events = enc.on_agent_event(&AgentEvent::ToolCallResumed {
+            target_id: "tc1".into(),
+            result: serde_json::json!({"approved": false}),
+        });
+        assert_eq!(events.len(), 1);
+        let json = serde_json::to_string(&events[0]).unwrap();
+        assert!(json.contains("tc1"));
+        assert!(json.contains("denied") || json.contains("Denied"));
+    }
+
+    #[test]
+    fn tool_call_resumed_error_emits_output_error() {
+        let mut enc = AiSdkEncoder::new();
+        let events = enc.on_agent_event(&AgentEvent::ToolCallResumed {
+            target_id: "tc1".into(),
+            result: serde_json::json!({"error": "timeout"}),
+        });
+        assert_eq!(events.len(), 1);
+        let json = serde_json::to_string(&events[0]).unwrap();
+        assert!(json.contains("tc1"));
+    }
+
+    // ── Suspend → Resume full lifecycle (AI SDK) ─────────────────────
+
+    #[test]
+    fn suspend_then_resume_ai_sdk_lifecycle() {
+        let mut enc = AiSdkEncoder::new();
+        let mut all = Vec::new();
+
+        // Phase 1: start → tool call → pending (approval request) → suspend
+        all.extend(enc.on_agent_event(&AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: None,
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::StepStart {
+            message_id: "m1".into(),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::ToolCallStart {
+            id: "tc1".into(),
+            name: "add_trips".into(),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::ToolCallReady {
+            id: "tc1".into(),
+            name: "add_trips".into(),
+            arguments: serde_json::json!({"trips": []}),
+        }));
+        // Pending = approval request
+        all.extend(enc.on_agent_event(&AgentEvent::ToolCallDone {
+            id: "tc1".into(),
+            message_id: "m1".into(),
+            result: ToolResult::suspended("add_trips", "awaiting approval"),
+            outcome: ToolCallOutcome::Suspended,
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::StepEnd));
+        // RunFinish(Suspended) signals the interrupt
+        all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: None,
+            termination: TerminationReason::Suspended,
+        }));
+
+        // Verify approval request was emitted
+        let json_all: Vec<String> = all
+            .iter()
+            .map(|e| serde_json::to_string(e).unwrap())
+            .collect();
+        assert!(
+            json_all
+                .iter()
+                .any(|j| j.contains("tool-calls") || j.contains("approval")),
+            "should contain tool approval signal: {json_all:?}"
+        );
+
+        // Phase 2: resume with approval → continued execution
+        all.extend(enc.on_agent_event(&AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: None,
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::ToolCallResumed {
+            target_id: "tc1".into(),
+            result: serde_json::json!({"approved": true}),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::StepStart {
+            message_id: "m2".into(),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "Trip added!".into(),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::StepEnd));
+        all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: None,
+            termination: TerminationReason::NaturalEnd,
+        }));
+
+        // Verify the resumed text appeared
+        let json_all: Vec<String> = all
+            .iter()
+            .map(|e| serde_json::to_string(e).unwrap())
+            .collect();
+        assert!(
+            json_all.iter().any(|j| j.contains("Trip added!")),
+            "resumed text should appear"
+        );
     }
 }
