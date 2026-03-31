@@ -136,6 +136,20 @@ impl MailboxStore for InMemoryMailboxStore {
             _ => return Ok(None),
         };
 
+        // Same mailbox exclusivity as claim(): reject if another job
+        // for the same mailbox is already Claimed.
+        let mailbox_id = job.mailbox_id.clone();
+        let has_other_claimed = jobs.values().any(|j| {
+            j.mailbox_id == mailbox_id
+                && j.job_id != job_id
+                && j.status == MailboxJobStatus::Claimed
+        });
+        if has_other_claimed {
+            return Ok(None);
+        }
+
+        // Re-borrow after the shared check above.
+        let job = jobs.get_mut(job_id).unwrap();
         let token = Uuid::now_v7().to_string();
         job.status = MailboxJobStatus::Claimed;
         job.claim_token = Some(token);

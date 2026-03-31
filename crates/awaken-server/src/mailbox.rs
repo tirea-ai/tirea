@@ -28,6 +28,58 @@ use awaken_runtime::{AgentRuntime, RunRequest};
 
 use crate::transport::channel_sink::ReconnectableEventSink;
 
+// ── RunRequest ↔ MailboxJob conversion ───────────────────────────────
+
+/// Typed envelope for RunRequest fields that Mailbox stores opaquely.
+/// Centralizes the RunRequest → MailboxJob → RunRequest round-trip.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct RunRequestExtras {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    overrides: Option<awaken_contract::contract::inference::InferenceOverride>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    decisions: Vec<(
+        String,
+        awaken_contract::contract::suspension::ToolCallResume,
+    )>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    frontend_tools: Vec<awaken_contract::contract::tool::ToolDescriptor>,
+}
+
+impl RunRequestExtras {
+    fn from_request(request: &awaken_runtime::RunRequest) -> Self {
+        Self {
+            overrides: request.overrides.clone(),
+            decisions: request.decisions.clone(),
+            frontend_tools: request.frontend_tools.clone(),
+        }
+    }
+
+    fn to_value(&self) -> Option<serde_json::Value> {
+        if self.overrides.is_none() && self.decisions.is_empty() && self.frontend_tools.is_empty() {
+            None
+        } else {
+            serde_json::to_value(self).ok()
+        }
+    }
+
+    fn from_value(value: &serde_json::Value) -> Option<Self> {
+        serde_json::from_value(value.clone()).ok()
+    }
+
+    fn apply_to(self, mut request: awaken_runtime::RunRequest) -> awaken_runtime::RunRequest {
+        if let Some(ov) = self.overrides {
+            request = request.with_overrides(ov);
+        }
+        if !self.decisions.is_empty() {
+            request = request.with_decisions(self.decisions);
+        }
+        if !self.frontend_tools.is_empty() {
+            request = request.with_frontend_tools(self.frontend_tools);
+        }
+        request
+    }
+}
+
 // ── Public types ─────────────────────────────────────────────────────
 
 /// Result returned by submit/submit_background.
@@ -300,14 +352,15 @@ impl Mailbox {
                 event_rx,
             ))
         } else {
-            // Claim failed (unlikely for inline claim), treat as queued.
-            Ok((
-                MailboxSubmitResult {
-                    job_id,
-                    thread_id,
-                    status: MailboxDispatchStatus::Queued { pending_ahead: 0 },
-                },
-                event_rx,
+            // Inline claim failed (another claimed job exists for this
+            // mailbox). Fix the available_at so the job can be dispatched
+            // normally when the current run finishes.
+            let now_fix = now_ms();
+            if let Err(e) = self.store.cancel(&job_id, now_fix).await {
+                tracing::warn!(job_id, error = %e, "failed to cancel unclaimed inline job");
+            }
+            Err(MailboxError::Validation(
+                "thread has an active run; cannot claim inline".into(),
             ))
         }
     }
@@ -330,22 +383,21 @@ impl Mailbox {
         // WAL: persist with available_at = now.
         self.store.enqueue(&job).await?;
 
-        // Check worker state and dispatch or buffer.
-        let worker = self.get_or_create_worker(&mailbox_id).await;
+        // Dispatch via try_dispatch_next which handles Idle → Claiming atomically.
+        self.get_or_create_worker(&mailbox_id).await;
+        self.try_dispatch_next(&mailbox_id).await;
+
+        // Check if we ended up running or still queued.
         let status = {
-            let mut w = worker.lock().await;
-            match &w.status {
-                MailboxWorkerStatus::Idle => {
-                    // Dispatch immediately.
-                    drop(w);
-                    self.dispatch_job(&mailbox_id).await;
-                    MailboxDispatchStatus::Running
+            let workers = self.workers.read().await;
+            if let Some(worker) = workers.get(&mailbox_id) {
+                let w = worker.lock().await;
+                match &w.status {
+                    MailboxWorkerStatus::Running { .. } => MailboxDispatchStatus::Running,
+                    _ => MailboxDispatchStatus::Queued { pending_ahead: 0 },
                 }
-                MailboxWorkerStatus::Claiming | MailboxWorkerStatus::Running { .. } => {
-                    // Job stays in store queue; will be dispatched when
-                    // current run completes.
-                    MailboxDispatchStatus::Queued { pending_ahead: 0 }
-                }
+            } else {
+                MailboxDispatchStatus::Queued { pending_ahead: 0 }
             }
         };
 
@@ -643,29 +695,12 @@ impl Mailbox {
                 request = request.with_agent_id(job.agent_id.clone());
             }
             // Reconstruct RunRequest extras from opaque payload.
-            if let Some(ref extras) = job.request_extras {
-                if let Ok(overrides) = serde_json::from_value(extras["overrides"].clone()) {
-                    request = request.with_overrides(overrides);
-                }
-                if let Ok(decisions) = serde_json::from_value::<
-                    Vec<(
-                        String,
-                        awaken_contract::contract::suspension::ToolCallResume,
-                    )>,
-                >(extras["decisions"].clone())
-                {
-                    if !decisions.is_empty() {
-                        request = request.with_decisions(decisions);
-                    }
-                }
-                if let Ok(tools) = serde_json::from_value::<
-                    Vec<awaken_contract::contract::tool::ToolDescriptor>,
-                >(extras["frontend_tools"].clone())
-                {
-                    if !tools.is_empty() {
-                        request = request.with_frontend_tools(tools);
-                    }
-                }
+            if let Some(extras) = job
+                .request_extras
+                .as_ref()
+                .and_then(RunRequestExtras::from_value)
+            {
+                request = extras.apply_to(request);
             }
 
             let result = this.runtime.run(request, Arc::new(sink)).await;
@@ -768,18 +803,8 @@ impl Mailbox {
         thread_id: &str,
         messages: Vec<Message>,
     ) -> MailboxJob {
-        // Serialize RunRequest extras that Mailbox doesn't inspect.
-        let extras = serde_json::json!({
-            "overrides": request.overrides,
-            "decisions": request.decisions,
-            "frontend_tools": request.frontend_tools,
-        });
-        let request_extras =
-            if extras == serde_json::json!({"overrides":null,"decisions":[],"frontend_tools":[]}) {
-                None
-            } else {
-                Some(extras)
-            };
+        let extras = RunRequestExtras::from_request(request);
+        let request_extras = extras.to_value();
 
         let now = now_ms();
         MailboxJob {
