@@ -27,7 +27,7 @@ pub struct FrontendToolPlugin {
 
 impl FrontendToolPlugin {
     pub fn new() -> Self {
-        let tools = HashSet::from(["askUserQuestion"]);
+        let tools = HashSet::from(["askUserQuestion", "set_background_color"]);
         Self { tools }
     }
 }

@@ -53,7 +53,7 @@ use crate::starter_backend::research::{
 };
 use crate::starter_backend::tools::{
     AppendNoteTool, AskUserQuestionTool, FailingTool, FinishTool, GetStockPriceTool,
-    GetWeatherTool, ProgressDemoTool, ServerInfoTool,
+    GetWeatherTool, ProgressDemoTool, ServerInfoTool, SetBackgroundColorTool,
 };
 use crate::starter_backend::travel::{
     AddTripTool, DeleteTripTool, SearchPlacesTool, SelectTripTool, UpdateTripTool,
@@ -546,8 +546,7 @@ Deterministic compatibility directives:\n\
         ("finish", Arc::new(FinishTool)),
         ("progress_demo", Arc::new(ProgressDemoTool)),
         ("askUserQuestion", Arc::new(AskUserQuestionTool)),
-        // set_background_color: no backend tool — handled entirely by
-        // frontend via FrontEndTool wrapper (tools array from AI SDK)
+        ("set_background_color", Arc::new(SetBackgroundColorTool)),
         ("add_trips", Arc::new(AddTripTool)),
         ("update_trips", Arc::new(UpdateTripTool)),
         ("delete_trips", Arc::new(DeleteTripTool)),

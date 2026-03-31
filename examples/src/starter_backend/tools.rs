@@ -473,7 +473,35 @@ impl Tool for AskUserQuestionTool {
     }
 }
 
-// set_background_color: Pure frontend tool — no backend struct needed.
-// Registered by the frontend via AG-UI/AI SDK `tools` array.
-// The runtime wraps it as FrontEndTool (returns success with args).
+/// Frontend tool: returns success immediately with args as result.
+/// The frontend renders a color picker UI and applies the selected color.
+/// The tool result (with user's selection) flows back to the LLM via
+/// `sendAutomaticallyWhen` in the next turn.
+pub struct SetBackgroundColorTool;
+
+#[async_trait]
+impl Tool for SetBackgroundColorTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new(
+            "set_background_color",
+            "Set Background Color",
+            "Present color options to the user. The frontend will render a color picker and apply the chosen color.",
+        )
+        .with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "colors": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Hex color codes for the user to choose from"
+                }
+            },
+            "required": ["colors"]
+        }))
+    }
+
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        Ok(ToolResult::success("set_background_color", args).into())
+    }
+}
 // Frontend renders the color picker UI and submits via addToolOutput.
