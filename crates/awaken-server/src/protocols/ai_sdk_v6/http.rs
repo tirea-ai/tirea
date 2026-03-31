@@ -149,10 +149,14 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
     }
 
     if resume_only {
-        // Pure resume with no messages and no active run — nothing to do.
-        return Err(ApiError::BadRequest(
-            "no active run available for interaction responses".to_string(),
-        ));
+        // Pure resume with no messages and no active run. This commonly
+        // happens when AI SDK's `sendAutomaticallyWhen` fires after a
+        // frontend tool's output was already consumed. Return an empty
+        // stream rather than an error — the frontend ignores it.
+        let (_, rx) = tokio::sync::mpsc::unbounded_channel();
+        let encoder = AiSdkEncoder::new();
+        let sse_rx = crate::http_run::wire_sse_relay(rx, encoder, st.config.sse_buffer_size, None);
+        return Ok(sse_response(sse_body_stream(sse_rx)));
     }
 
     let messages = crate::request::inject_frontend_context(messages, state);
