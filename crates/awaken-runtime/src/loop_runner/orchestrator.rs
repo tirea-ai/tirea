@@ -276,6 +276,19 @@ pub(super) async fn run_agent_loop_impl(
                 )
                 .await?;
 
+                // Emit RunFinish(Suspended) so protocol encoders can send
+                // the appropriate interrupt signal to the client. AG-UI
+                // clients (e.g. CopilotKit) need RUN_FINISHED with
+                // `outcome: "interrupt"` to activate approval UIs.
+                emit_state_snapshot(store, sink.as_ref()).await;
+                sink.emit(AgentEvent::RunFinish {
+                    thread_id: run_identity.thread_id.clone(),
+                    run_id: run_identity.run_id.clone(),
+                    result: None,
+                    termination: TerminationReason::Suspended,
+                })
+                .await;
+
                 match wait_for_resume_or_cancel(
                     decision_rx.as_mut(),
                     cancellation_token.as_ref(),
@@ -294,6 +307,14 @@ pub(super) async fn run_agent_loop_impl(
                                 updated_at: now_ms(),
                             },
                         )?;
+                        // Emit RunStart to signal the protocol layer that
+                        // the run is continuing after the interrupt.
+                        sink.emit(AgentEvent::RunStart {
+                            thread_id: run_identity.thread_id.clone(),
+                            run_id: run_identity.run_id.clone(),
+                            parent_run_id: run_identity.parent_run_id.clone(),
+                        })
+                        .await;
                         continue;
                     }
                     WaitOutcome::Cancelled => break TerminationReason::Cancelled,

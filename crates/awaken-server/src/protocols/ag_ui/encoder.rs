@@ -54,8 +54,13 @@ impl AgUiEncoder {
     }
 
     pub fn on_agent_event(&mut self, ev: &AgentEvent) -> Vec<Event> {
+        // A RunStart after a Suspended RunFinish signals resume — reset the guard.
         if self.guard.is_finished() {
-            return Vec::new();
+            if matches!(ev, AgentEvent::RunStart { .. }) {
+                self.guard = crate::protocols::shared::TerminalGuard::new();
+            } else {
+                return Vec::new();
+            }
         }
 
         match ev {
@@ -699,6 +704,130 @@ mod tests {
             let int = interrupt.as_ref().unwrap();
             assert_eq!(int.reason.as_deref(), Some("tool_approval"));
         }
+    }
+
+    #[test]
+    fn suspend_then_resume_resets_guard_and_emits_full_lifecycle() {
+        let mut enc = AgUiEncoder::new();
+        let mut all = Vec::new();
+
+        // Phase 1: normal start → tool call → suspend
+        all.extend(enc.on_agent_event(&AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: None,
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::StepStart {
+            message_id: "m1".into(),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::ToolCallStart {
+            id: "tc1".into(),
+            name: "add_trips".into(),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::ToolCallReady {
+            id: "tc1".into(),
+            name: "add_trips".into(),
+            arguments: serde_json::json!({"trips": []}),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::StepEnd));
+        // Suspend: RunFinish with Suspended termination
+        all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: None,
+            termination: TerminationReason::Suspended,
+        }));
+
+        // At this point guard is finished. Verify interrupt was emitted.
+        let types: Vec<&str> = all.iter().map(event_type_name).collect();
+        assert!(
+            types.contains(&"RUN_FINISHED"),
+            "should contain RUN_FINISHED for interrupt: {types:?}"
+        );
+        // Verify no events leak after RunFinish
+        let blocked = enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "should be blocked".into(),
+        });
+        assert!(
+            blocked.is_empty(),
+            "guard should block events after RunFinish"
+        );
+
+        // Phase 2: resume → new RunStart resets the guard
+        all.extend(enc.on_agent_event(&AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: None,
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::StepStart {
+            message_id: "m2".into(),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "resumed response".into(),
+        }));
+        all.extend(enc.on_agent_event(&AgentEvent::StepEnd));
+        all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: None,
+            termination: TerminationReason::NaturalEnd,
+        }));
+
+        let types: Vec<&str> = all.iter().map(event_type_name).collect();
+        // Should have two RUN_STARTED (original + resume)
+        assert_eq!(
+            types.iter().filter(|t| **t == "RUN_STARTED").count(),
+            2,
+            "should have two RUN_STARTED events: {types:?}"
+        );
+        // Should have two RUN_FINISHED (interrupt + natural end)
+        assert_eq!(
+            types.iter().filter(|t| **t == "RUN_FINISHED").count(),
+            2,
+            "should have two RUN_FINISHED events: {types:?}"
+        );
+        // The resumed text should appear
+        assert!(
+            all.iter().any(|e| matches!(
+                e,
+                Event::TextMessageContent { delta, .. } if delta == "resumed response"
+            )),
+            "resumed text should appear in events"
+        );
+    }
+
+    #[test]
+    fn suspend_without_resume_emits_single_run_finished() {
+        let mut enc = AgUiEncoder::new();
+        let mut all = Vec::new();
+
+        all.extend(enc.on_agent_event(&AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: None,
+        }));
+        // Suspend
+        all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: None,
+            termination: TerminationReason::Suspended,
+        }));
+        // If orchestrator also emits RunFinish(Suspended) after the loop,
+        // the guard should suppress the duplicate.
+        all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: None,
+            termination: TerminationReason::Suspended,
+        }));
+
+        let types: Vec<&str> = all.iter().map(event_type_name).collect();
+        assert_eq!(
+            types.iter().filter(|t| **t == "RUN_FINISHED").count(),
+            1,
+            "duplicate RunFinish should be suppressed: {types:?}"
+        );
     }
 
     // ── State machine and event ordering tests ─────────────────────────
