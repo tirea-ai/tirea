@@ -502,25 +502,20 @@ impl Tool for FrontEndTool {
         self.descriptor.clone()
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
-        use super::suspension::{PendingToolCall, SuspendTicket, Suspension, ToolCallResumeMode};
-
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
+        // Frontend tools return success immediately with the LLM-provided
+        // arguments as the result. The protocol layer sends the full
+        // TOOL_CALL_START → TOOL_CALL_ARGS → TOOL_CALL_END → TOOL_CALL_RESULT
+        // event sequence so the frontend can render its UI.
+        //
+        // Frontend frameworks handle the client-side interaction independently:
+        // - AI SDK: `addToolOutput` + `sendAutomaticallyWhen` triggers a new turn
+        // - CopilotKit: `renderAndWaitForResponse` pauses until user responds
+        //
+        // No backend suspension is needed — each framework controls its own
+        // tool interaction lifecycle via new HTTP requests, not SSE resume.
         let tool_name = &self.descriptor.id;
-        let call_id = ctx.call_id.clone();
-
-        let ticket = SuspendTicket::new(
-            Suspension {
-                id: call_id.clone(),
-                action: format!("tool:{tool_name}"),
-                message: String::new(),
-                parameters: args.clone(),
-                ..Default::default()
-            },
-            PendingToolCall::new(&call_id, tool_name, args),
-            ToolCallResumeMode::UseDecisionAsToolResult,
-        );
-
-        Ok(ToolResult::suspended_with(tool_name, "Waiting for frontend", ticket).into())
+        Ok(ToolResult::success(tool_name, args).into())
     }
 }
 
@@ -1847,46 +1842,23 @@ mod tests {
     async fn frontend_tool_execute_returns_pending_status() {
         let desc = ToolDescriptor::new("ui_confirm", "UI Confirm", "Confirm dialog");
         let tool = FrontEndTool::new(desc);
-        let mut ctx = ToolCallContext::test_default();
-        ctx.call_id = "call-fe-1".into();
-        let output = tool.execute(json!({"prompt": "ok?"}), &ctx).await.unwrap();
-        assert!(output.result.is_pending());
-        assert!(!output.result.is_success());
-        assert!(!output.result.is_error());
+        let ctx = ToolCallContext::test_default();
+        let args = json!({"prompt": "ok?"});
+        let output = tool.execute(args.clone(), &ctx).await.unwrap();
+        // FrontEndTool returns success with args as the result
+        assert!(output.result.is_success());
+        assert_eq!(output.result.data, args);
     }
 
     #[tokio::test]
-    async fn frontend_tool_result_has_use_decision_as_tool_result_mode() {
-        use crate::contract::suspension::ToolCallResumeMode;
-
-        let desc = ToolDescriptor::new("ui_confirm", "UI Confirm", "Confirm dialog");
-        let tool = FrontEndTool::new(desc);
-        let mut ctx = ToolCallContext::test_default();
-        ctx.call_id = "call-fe-2".into();
-        let output = tool.execute(json!({"msg": "hi"}), &ctx).await.unwrap();
-        let ticket = output
-            .result
-            .suspension
-            .expect("should have suspension ticket");
-        assert_eq!(
-            ticket.resume_mode,
-            ToolCallResumeMode::UseDecisionAsToolResult
-        );
-    }
-
-    #[tokio::test]
-    async fn frontend_tool_suspension_ticket_contains_original_args() {
+    async fn frontend_tool_returns_args_as_result_data() {
         let desc = ToolDescriptor::new("ui_form", "UI Form", "Form input");
         let tool = FrontEndTool::new(desc);
-        let mut ctx = ToolCallContext::test_default();
-        ctx.call_id = "call-fe-3".into();
+        let ctx = ToolCallContext::test_default();
         let args = json!({"field": "value", "count": 42});
         let output = tool.execute(args.clone(), &ctx).await.unwrap();
-        let ticket = output
-            .result
-            .suspension
-            .expect("should have suspension ticket");
-        assert_eq!(ticket.suspension.parameters, args);
+        assert!(output.result.is_success());
+        assert_eq!(output.result.data, args);
     }
 
     #[tokio::test]
@@ -1917,20 +1889,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn frontend_tool_with_empty_args_still_suspends() {
+    async fn frontend_tool_with_empty_args_returns_success() {
         let desc = ToolDescriptor::new("ui_noop", "UI Noop", "No-op frontend tool");
         let tool = FrontEndTool::new(desc);
-        let mut ctx = ToolCallContext::test_default();
-        ctx.call_id = "call-fe-5".into();
+        let ctx = ToolCallContext::test_default();
         let output = tool.execute(json!({}), &ctx).await.unwrap();
-        assert!(output.result.is_pending());
-        let ticket = output
-            .result
-            .suspension
-            .expect("should have suspension ticket");
-        assert_eq!(ticket.suspension.parameters, json!({}));
-        assert_eq!(ticket.suspension.id, "call-fe-5");
-        assert_eq!(ticket.suspension.action, "tool:ui_noop");
+        assert!(output.result.is_success());
+        assert_eq!(output.result.data, json!({}));
     }
 
     mod tool_validation_error_tests {
