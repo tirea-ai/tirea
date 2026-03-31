@@ -182,8 +182,12 @@ impl AiSdkEncoder {
                         vec![UIStreamEvent::tool_output_available(id, output)]
                     }
                     ToolStatus::Pending => {
-                        // Suspended tool call — emit approval request
-                        vec![UIStreamEvent::tool_approval_request(id, id)]
+                        // Suspended tool call — frontend should provide the
+                        // result. Emit nothing here; the TOOL_CALL_END from
+                        // ToolCallReady already set state to input-available.
+                        // The frontend renders its UI (color picker, user
+                        // input, etc.) and submits via addToolOutput.
+                        Vec::new()
                     }
                     ToolStatus::Error => {
                         let error_text =
@@ -229,6 +233,19 @@ impl AiSdkEncoder {
             }
 
             AgentEvent::RunFinish { termination, .. } => {
+                // For Suspended termination, emit finish(tool-calls) to tell
+                // the frontend it should provide tool outputs, but do NOT
+                // mark the guard as finished — the SSE stream stays open so
+                // the orchestrator can resume and emit subsequent events.
+                if matches!(termination, TerminationReason::Suspended) {
+                    let mut events = Vec::new();
+                    if self.text_open {
+                        events.push(self.close_text());
+                    }
+                    events.extend(self.close_all_reasoning());
+                    events.push(UIStreamEvent::finish_with_reason("tool-calls"));
+                    return events;
+                }
                 self.guard.mark_finished();
                 let mut events = Vec::new();
                 if self.text_open {
@@ -239,7 +256,7 @@ impl AiSdkEncoder {
                     TerminationReason::NaturalEnd | TerminationReason::BehaviorRequested => "stop",
                     TerminationReason::Stopped(_) => "stop",
                     TerminationReason::Cancelled => "stop",
-                    TerminationReason::Suspended => "tool-calls",
+                    TerminationReason::Suspended => unreachable!(),
                     TerminationReason::Error(_) => "error",
                     TerminationReason::Blocked(_) => "content-filter",
                 };
@@ -543,19 +560,17 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_done_pending_maps_to_approval_request() {
+    fn tool_call_done_pending_emits_nothing() {
+        // Pending tool calls emit no event — the frontend already knows
+        // about the tool call from TOOL_CALL_END and renders its own UI.
         let mut enc = AiSdkEncoder::new();
         let events = enc.on_agent_event(&AgentEvent::ToolCallDone {
             id: "c1".into(),
             message_id: "m1".into(),
-            result: ToolResult::suspended("dangerous", "needs approval"),
+            result: ToolResult::suspended("tool", "needs input"),
             outcome: ToolCallOutcome::Suspended,
         });
-        assert_eq!(events.len(), 1);
-        assert!(matches!(
-            &events[0],
-            UIStreamEvent::ToolApprovalRequest { tool_call_id, .. } if tool_call_id == "c1"
-        ));
+        assert!(events.is_empty());
     }
 
     #[test]
@@ -666,7 +681,9 @@ mod tests {
     }
 
     #[test]
-    fn run_finish_suspended_uses_tool_calls_reason() {
+    fn run_finish_suspended_emits_tool_calls_finish_without_guard() {
+        // Suspended RunFinish emits finish(tool-calls) to signal the
+        // frontend, but does NOT mark the guard — stream stays open.
         let mut enc = AiSdkEncoder::new();
         let events = enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
@@ -674,12 +691,19 @@ mod tests {
             result: None,
             termination: TerminationReason::Suspended,
         });
-        match events.last().unwrap() {
-            UIStreamEvent::Finish { finish_reason, .. } => {
-                assert_eq!(finish_reason.as_deref(), Some("tool-calls"));
-            }
-            _ => panic!("expected Finish"),
-        }
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            UIStreamEvent::Finish { finish_reason, .. } if finish_reason.as_deref() == Some("tool-calls")
+        ));
+        // Guard should NOT be set — subsequent events should still work
+        let text_events = enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "resumed".into(),
+        });
+        assert!(
+            !text_events.is_empty(),
+            "guard should not block after suspended finish"
+        );
     }
 
     #[test]
@@ -932,7 +956,7 @@ mod tests {
         let mut enc = AiSdkEncoder::new();
         let mut all = Vec::new();
 
-        // Phase 1: start → tool call → pending (approval request) → suspend
+        // Phase 1: start → tool call → pending → RunFinish(Suspended) suppressed
         all.extend(enc.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
@@ -950,15 +974,15 @@ mod tests {
             name: "add_trips".into(),
             arguments: serde_json::json!({"trips": []}),
         }));
-        // Pending = approval request
+        // Pending emits nothing (frontend handles input)
         all.extend(enc.on_agent_event(&AgentEvent::ToolCallDone {
             id: "tc1".into(),
             message_id: "m1".into(),
-            result: ToolResult::suspended("add_trips", "awaiting approval"),
+            result: ToolResult::suspended("add_trips", "awaiting input"),
             outcome: ToolCallOutcome::Suspended,
         }));
         all.extend(enc.on_agent_event(&AgentEvent::StepEnd));
-        // RunFinish(Suspended) signals the interrupt
+        // RunFinish(Suspended) is suppressed — stream stays open
         all.extend(enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
             run_id: "r1".into(),
@@ -966,24 +990,17 @@ mod tests {
             termination: TerminationReason::Suspended,
         }));
 
-        // Verify approval request was emitted
-        let json_all: Vec<String> = all
+        // A finish(tool-calls) should have been emitted (without guard)
+        let finish_count = all
             .iter()
-            .map(|e| serde_json::to_string(e).unwrap())
-            .collect();
-        assert!(
-            json_all
-                .iter()
-                .any(|j| j.contains("tool-calls") || j.contains("approval")),
-            "should contain tool approval signal: {json_all:?}"
+            .filter(|e| matches!(e, UIStreamEvent::Finish { .. }))
+            .count();
+        assert_eq!(
+            finish_count, 1,
+            "RunFinish(Suspended) should emit finish(tool-calls)"
         );
 
-        // Phase 2: resume with approval → continued execution
-        all.extend(enc.on_agent_event(&AgentEvent::RunStart {
-            thread_id: "t1".into(),
-            run_id: "r1".into(),
-            parent_run_id: None,
-        }));
+        // Phase 2: resume → ToolCallResumed → continued execution → real finish
         all.extend(enc.on_agent_event(&AgentEvent::ToolCallResumed {
             target_id: "tc1".into(),
             result: serde_json::json!({"approved": true}),
@@ -1002,7 +1019,17 @@ mod tests {
             termination: TerminationReason::NaturalEnd,
         }));
 
-        // Verify the resumed text appeared
+        // Two finishes: tool-calls (suspend) + stop (natural end)
+        let finish_count = all
+            .iter()
+            .filter(|e| matches!(e, UIStreamEvent::Finish { .. }))
+            .count();
+        assert_eq!(
+            finish_count, 2,
+            "should have two finish events (tool-calls + stop)"
+        );
+
+        // Resumed text should appear
         let json_all: Vec<String> = all
             .iter()
             .map(|e| serde_json::to_string(e).unwrap())

@@ -168,6 +168,7 @@ fn tool_call_done_error_maps_to_output_error() {
 
 #[test]
 fn tool_call_done_pending_maps_to_approval_request() {
+    // Pending now emits nothing — frontend handles input via its own UI
     let mut enc = AiSdkEncoder::new();
     let events = enc.on_agent_event(&AgentEvent::ToolCallDone {
         id: "c1".into(),
@@ -175,10 +176,7 @@ fn tool_call_done_pending_maps_to_approval_request() {
         result: ToolResult::suspended("confirm", "needs approval"),
         outcome: ToolCallOutcome::Suspended,
     });
-    assert_eq!(events.len(), 1);
-    assert!(
-        matches!(&events[0], UIStreamEvent::ToolApprovalRequest { tool_call_id, .. } if tool_call_id == "c1")
-    );
+    assert!(events.is_empty());
 }
 
 // ============================================================================
@@ -246,7 +244,8 @@ fn natural_end_maps_to_stop_reason() {
 }
 
 #[test]
-fn suspended_maps_to_tool_calls_reason() {
+fn suspended_emits_tool_calls_finish() {
+    // Suspended RunFinish emits finish(tool-calls) without setting the guard
     let mut enc = AiSdkEncoder::new();
     let events = enc.on_agent_event(&AgentEvent::RunFinish {
         thread_id: "t1".into(),
@@ -254,7 +253,8 @@ fn suspended_maps_to_tool_calls_reason() {
         result: None,
         termination: TerminationReason::Suspended,
     });
-    match events.last().unwrap() {
+    assert_eq!(events.len(), 1);
+    match &events[0] {
         UIStreamEvent::Finish { finish_reason, .. } => {
             assert_eq!(finish_reason.as_deref(), Some("tool-calls"));
         }
@@ -1052,11 +1052,8 @@ fn tool_suspension_no_result_event() {
         result: ToolResult::suspended("confirm", "awaiting user approval"),
         outcome: ToolCallOutcome::Suspended,
     });
-    // Suspended tool should emit approval request, not output available
-    assert_eq!(events.len(), 1);
-    assert!(
-        matches!(&events[0], UIStreamEvent::ToolApprovalRequest { tool_call_id, .. } if tool_call_id == "c1")
-    );
+    // Suspended tool emits nothing — frontend handles input via its own UI
+    assert!(events.is_empty());
     // No ToolOutputAvailable should be present
     assert!(
         !events

@@ -122,19 +122,37 @@ async fn ai_sdk_chat_inner(st: AppState, payload: AiSdkChatRequest) -> Result<Re
         agent_id,
     } = processed;
 
-    if resume_only {
-        // Resume-only: no new content, just tool-call decisions.
-        let response = stream_existing_thread_from_now(&st, &thread_id)?;
-
-        for (tool_call_id, resume) in decisions {
-            if !st.mailbox.send_decision(&thread_id, tool_call_id, resume) {
-                return Err(ApiError::BadRequest(
-                    "no active run available for interaction responses".to_string(),
-                ));
+    // If the request contains tool-call decisions and the thread has an
+    // active (suspended) run, deliver the decisions via the decision
+    // channel to resume the existing run. This handles the AI SDK
+    // `sendAutomaticallyWhen` pattern where `addToolOutput` triggers a
+    // new HTTP POST that includes both messages and decisions.
+    if !decisions.is_empty() {
+        let mut any_delivered = false;
+        for (tool_call_id, resume) in &decisions {
+            if st
+                .mailbox
+                .send_decision(&thread_id, tool_call_id.clone(), resume.clone())
+            {
+                any_delivered = true;
             }
         }
+        if any_delivered {
+            // Decisions were delivered to the active run. Stream from the
+            // existing SSE connection — the orchestrator will resume and
+            // emit events on the original stream.
+            let response = stream_existing_thread_from_now(&st, &thread_id)?;
+            return Ok(response);
+        }
+        // If no decisions were delivered (no active run), fall through
+        // to the normal submit path which starts a new run.
+    }
 
-        return Ok(response);
+    if resume_only {
+        // Pure resume with no messages and no active run — nothing to do.
+        return Err(ApiError::BadRequest(
+            "no active run available for interaction responses".to_string(),
+        ));
     }
 
     let messages = crate::request::inject_frontend_context(messages, state);
