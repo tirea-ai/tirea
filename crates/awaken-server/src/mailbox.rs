@@ -286,7 +286,7 @@ impl Mailbox {
             }
         }
 
-        let job = self.build_job(&request, &thread_id, messages);
+        let job = self.build_job(&request, &thread_id, messages)?;
         let job_id = job.job_id.clone();
         let mailbox_id = job.mailbox_id.clone();
 
@@ -353,8 +353,8 @@ impl Mailbox {
             ))
         } else {
             // Inline claim failed (another claimed job exists for this
-            // mailbox). Fix the available_at so the job can be dispatched
-            // normally when the current run finishes.
+            // mailbox). Cancel the orphaned job to prevent it from
+            // lingering with available_at=MAX.
             let now_fix = now_ms();
             if let Err(e) = self.store.cancel(&job_id, now_fix).await {
                 tracing::warn!(job_id, error = %e, "failed to cancel unclaimed inline job");
@@ -376,7 +376,7 @@ impl Mailbox {
         let (thread_id, messages) =
             validate_run_inputs(request.thread_id.clone(), request.messages.clone())?;
 
-        let job = self.build_job(&request, &thread_id, messages);
+        let job = self.build_job(&request, &thread_id, messages)?;
         let job_id = job.job_id.clone();
         let mailbox_id = job.mailbox_id.clone();
 
@@ -387,13 +387,15 @@ impl Mailbox {
         self.get_or_create_worker(&mailbox_id).await;
         self.try_dispatch_next(&mailbox_id).await;
 
-        // Check if we ended up running or still queued.
+        // Check if THIS job was claimed (Running) or still Queued.
         let status = {
             let workers = self.workers.read().await;
             if let Some(worker) = workers.get(&mailbox_id) {
                 let w = worker.lock().await;
                 match &w.status {
-                    MailboxWorkerStatus::Running { .. } => MailboxDispatchStatus::Running,
+                    MailboxWorkerStatus::Running {
+                        job_id: running_id, ..
+                    } if *running_id == job_id => MailboxDispatchStatus::Running,
                     _ => MailboxDispatchStatus::Queued,
                 }
             } else {
@@ -708,6 +710,11 @@ impl Mailbox {
                     }
                     Err(e) => {
                         tracing::error!(job_id, error = %e, "failed to deserialize RunRequestExtras");
+                        // Permanent failure — extras are corrupt.
+                        let now = now_ms();
+                        let msg = format!("corrupt request_extras: {e}");
+                        let _ = this.store.nack(&job_id, &claim_token, now, &msg, now).await;
+                        return;
                     }
                 }
             }
@@ -811,15 +818,14 @@ impl Mailbox {
         request: &RunRequest,
         thread_id: &str,
         messages: Vec<Message>,
-    ) -> MailboxJob {
+    ) -> Result<MailboxJob, MailboxError> {
         let extras = RunRequestExtras::from_request(request);
-        let request_extras = extras.to_value().unwrap_or_else(|e| {
-            tracing::error!(error = %e, "failed to serialize RunRequestExtras");
-            None
-        });
+        let request_extras = extras.to_value().map_err(|e| {
+            MailboxError::Validation(format!("failed to serialize request extras: {e}"))
+        })?;
 
         let now = now_ms();
-        MailboxJob {
+        Ok(MailboxJob {
             job_id: uuid::Uuid::now_v7().to_string(),
             mailbox_id: thread_id.to_string(),
             agent_id: request.agent_id.as_deref().unwrap_or_default().to_string(),
@@ -845,7 +851,7 @@ impl Mailbox {
             lease_until: None,
             created_at: now,
             updated_at: now,
-        }
+        })
     }
 
     // ── Maintenance ──────────────────────────────────────────────────
@@ -1360,7 +1366,7 @@ mod tests {
         let request =
             RunRequest::new("thread-42", vec![Message::user("test")]).with_agent_id("agent-x");
         let messages = request.messages.clone();
-        let job = mailbox.build_job(&request, "thread-42", messages);
+        let job = mailbox.build_job(&request, "thread-42", messages).unwrap();
 
         assert_eq!(job.mailbox_id, "thread-42");
         assert_eq!(job.agent_id, "agent-x");
@@ -1387,7 +1393,7 @@ mod tests {
 
         let request = RunRequest::new("thread-1", vec![Message::user("hi")]);
         let messages = request.messages.clone();
-        let job = mailbox.build_job(&request, "thread-1", messages);
+        let job = mailbox.build_job(&request, "thread-1", messages).unwrap();
         assert_eq!(job.agent_id, "");
     }
 
@@ -1403,7 +1409,7 @@ mod tests {
                 "ft1", "FT1", "desc",
             )]);
         let messages = request.messages.clone();
-        let job = mailbox.build_job(&request, "thread-ext", messages);
+        let job = mailbox.build_job(&request, "thread-ext", messages).unwrap();
 
         assert!(job.request_extras.is_some());
         let extras = job.request_extras.unwrap();
@@ -1461,7 +1467,9 @@ mod tests {
             .with_sender_id("sender-42")
             .with_parent_run_id("parent-run-1");
         let messages = request.messages.clone();
-        let job = mailbox.build_job(&request, "thread-meta", messages);
+        let job = mailbox
+            .build_job(&request, "thread-meta", messages)
+            .unwrap();
 
         assert!(matches!(job.origin, MailboxJobOrigin::A2A));
         assert_eq!(job.sender_id.as_deref(), Some("sender-42"));
@@ -1476,7 +1484,9 @@ mod tests {
 
         let request = RunRequest::new("thread-default", vec![Message::user("hi")]);
         let messages = request.messages.clone();
-        let job = mailbox.build_job(&request, "thread-default", messages);
+        let job = mailbox
+            .build_job(&request, "thread-default", messages)
+            .unwrap();
 
         assert!(matches!(job.origin, MailboxJobOrigin::User));
         assert!(job.sender_id.is_none());
@@ -1547,7 +1557,7 @@ mod tests {
         assert!(!result.job_id.is_empty());
         assert!(matches!(
             result.status,
-            MailboxDispatchStatus::Running | MailboxDispatchStatus::Queued { .. }
+            MailboxDispatchStatus::Running | MailboxDispatchStatus::Queued
         ));
     }
 
@@ -1571,5 +1581,162 @@ mod tests {
             },
         );
         assert!(!result);
+    }
+
+    // ── Concurrency tests ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn concurrent_submit_background_same_thread_only_one_runs() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store.clone());
+
+        // Submit 5 background jobs to the same thread concurrently.
+        let mut handles = Vec::new();
+        for i in 0..5 {
+            let mb = Arc::clone(&mailbox);
+            handles.push(tokio::spawn(async move {
+                let req = RunRequest::new("thread-conc", vec![Message::user(format!("msg-{i}"))])
+                    .with_agent_id("agent-1");
+                mb.submit_background(req).await
+            }));
+        }
+        let results: Vec<_> = futures::future::join_all(handles)
+            .await
+            .into_iter()
+            .map(|r| r.unwrap())
+            .collect();
+
+        // All should succeed (enqueue always works).
+        assert!(results.iter().all(|r| r.is_ok()));
+
+        // At most one should be Running (the rest are Queued).
+        let running_count = results
+            .iter()
+            .filter_map(|r| r.as_ref().ok())
+            .filter(|r| matches!(r.status, MailboxDispatchStatus::Running))
+            .count();
+        assert!(
+            running_count <= 1,
+            "at most 1 should be Running, got {running_count}"
+        );
+
+        // Store should have at most 1 Claimed job for this mailbox.
+        let jobs = store
+            .list_jobs("thread-conc", Some(&[MailboxJobStatus::Claimed]), 10, 0)
+            .await
+            .unwrap();
+        assert!(
+            jobs.len() <= 1,
+            "store should have at most 1 Claimed job, got {}",
+            jobs.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_submit_same_thread_only_one_claims() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store.clone());
+
+        // Submit 3 streaming requests to the same thread concurrently.
+        let mut handles = Vec::new();
+        for i in 0..3 {
+            let mb = Arc::clone(&mailbox);
+            handles.push(tokio::spawn(async move {
+                let req = RunRequest::new(
+                    "thread-stream-conc",
+                    vec![Message::user(format!("msg-{i}"))],
+                )
+                .with_agent_id("agent-1");
+                mb.submit(req).await
+            }));
+        }
+        let results: Vec<_> = futures::future::join_all(handles)
+            .await
+            .into_iter()
+            .map(|r| r.unwrap())
+            .collect();
+
+        // Some may fail (inline-claim rejected), some succeed.
+        let ok_count = results.iter().filter(|r| r.is_ok()).count();
+        assert!(ok_count >= 1, "at least 1 should succeed");
+
+        // Store should have at most 1 Claimed job.
+        let jobs = store
+            .list_jobs(
+                "thread-stream-conc",
+                Some(&[MailboxJobStatus::Claimed]),
+                10,
+                0,
+            )
+            .await
+            .unwrap();
+        assert!(jobs.len() <= 1, "at most 1 Claimed, got {}", jobs.len());
+    }
+
+    #[tokio::test]
+    async fn submit_background_returns_correct_status() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store.clone());
+
+        // First submit should dispatch (Running or Queued depending on timing).
+        let req1 =
+            RunRequest::new("thread-status", vec![Message::user("a")]).with_agent_id("agent-1");
+        let result1 = mailbox.submit_background(req1).await.unwrap();
+        // First job should be claimed/running since thread is idle.
+        assert!(
+            matches!(
+                result1.status,
+                MailboxDispatchStatus::Running | MailboxDispatchStatus::Queued
+            ),
+            "first job should be Running or Queued"
+        );
+
+        // Second submit while first is running should be Queued.
+        let req2 =
+            RunRequest::new("thread-status", vec![Message::user("b")]).with_agent_id("agent-1");
+        let result2 = mailbox.submit_background(req2).await.unwrap();
+        assert!(
+            matches!(result2.status, MailboxDispatchStatus::Queued),
+            "second job should be Queued while first is running"
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_status_not_corrupted_after_empty_claim() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store.clone());
+
+        // Submit and dispatch a job to get worker into Running state.
+        let req =
+            RunRequest::new("thread-guard", vec![Message::user("a")]).with_agent_id("agent-1");
+        mailbox.submit_background(req).await.unwrap();
+
+        // Worker should be Running (or Claiming).
+        let workers = mailbox.workers.read().await;
+        if let Some(worker) = workers.get("thread-guard") {
+            let w = worker.lock().await;
+            assert!(
+                !matches!(w.status, MailboxWorkerStatus::Idle),
+                "worker should not be Idle after dispatch"
+            );
+        }
+        drop(workers);
+
+        // Call try_dispatch_next while Running — should be a no-op.
+        mailbox.try_dispatch_next("thread-guard").await;
+
+        // Worker should still be Running, not reverted to Idle.
+        let workers = mailbox.workers.read().await;
+        if let Some(worker) = workers.get("thread-guard") {
+            let w = worker.lock().await;
+            assert!(
+                !matches!(w.status, MailboxWorkerStatus::Idle),
+                "worker should still not be Idle"
+            );
+        }
     }
 }

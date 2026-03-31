@@ -370,10 +370,9 @@ async fn post_thread_messages(
             "status": "running",
             "thread_id": id,
         }),
-        MailboxDispatchStatus::Queued { pending_ahead } => json!({
+        MailboxDispatchStatus::Queued => json!({
             "status": "queued",
             "thread_id": id,
-            "pending_ahead": pending_ahead,
         }),
     };
 

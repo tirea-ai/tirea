@@ -50,6 +50,8 @@ impl AgentRuntime {
         request: RunRequest,
         sink: Arc<dyn EventSink>,
     ) -> Result<AgentRunResult, AgentLoopError> {
+        let req_origin = request.origin.clone();
+        let req_parent_run_id = request.parent_run_id.clone();
         let RunRequest {
             messages: request_messages,
             thread_id,
@@ -57,6 +59,7 @@ impl AgentRuntime {
             overrides,
             decisions,
             frontend_tools,
+            ..
         } = request;
         let agent_id = self.resolve_agent_id(agent_id, &thread_id).await?;
 
@@ -122,8 +125,10 @@ impl AgentRuntime {
 
         // Create run identity
         let run_id = uuid::Uuid::now_v7().to_string();
-        let run_origin = match request.origin.as_deref() {
-            Some("a2a") => awaken_contract::contract::identity::RunOrigin::A2A,
+        let run_origin = match req_origin.as_deref() {
+            Some("a2a") | Some("subagent") => {
+                awaken_contract::contract::identity::RunOrigin::Subagent
+            }
             Some("internal") => awaken_contract::contract::identity::RunOrigin::Internal,
             _ => awaken_contract::contract::identity::RunOrigin::User,
         };
@@ -131,7 +136,7 @@ impl AgentRuntime {
             thread_id.clone(),
             None,
             run_id.clone(),
-            request.parent_run_id.clone(),
+            req_parent_run_id,
             agent_id.clone(),
             run_origin,
         );

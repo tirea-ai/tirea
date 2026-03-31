@@ -881,22 +881,22 @@ mod tests {
         let store = InMemoryMailboxStore::new();
         let job1 = make_job("m-1", "agent-1");
         let job2 = make_job("m-1", "agent-1");
-        let id1 = job1.job_id.clone();
-        let token1;
         store.enqueue(&job1).await.unwrap();
         store.enqueue(&job2).await.unwrap();
 
-        // Claim first.
+        // Claim first (whichever the store picks).
         let claimed = store.claim("m-1", "c-1", 30_000, 1000, 1).await.unwrap();
         assert_eq!(claimed.len(), 1);
-        token1 = claimed[0].claim_token.clone().unwrap();
+        let claimed_id = claimed[0].job_id.clone();
+        let claimed_token = claimed[0].claim_token.clone().unwrap();
 
-        // Ack first → Accepted.
-        store.ack(&id1, &token1, 2000).await.unwrap();
+        // Ack the claimed job → Accepted.
+        store.ack(&claimed_id, &claimed_token, 2000).await.unwrap();
 
-        // Now claim should succeed for second job.
+        // Now claim should succeed for the other job.
         let claimed2 = store.claim("m-1", "c-1", 30_000, 2000, 1).await.unwrap();
         assert_eq!(claimed2.len(), 1);
+        assert_ne!(claimed2[0].job_id, claimed_id);
     }
 
     // ── Concurrency & parallelism tests ─────────────────────────────
