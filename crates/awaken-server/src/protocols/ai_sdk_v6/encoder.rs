@@ -233,17 +233,18 @@ impl AiSdkEncoder {
             }
 
             AgentEvent::RunFinish { termination, .. } => {
-                // For Suspended termination, emit finish(tool-calls) to tell
-                // the frontend it should provide tool outputs, but do NOT
-                // mark the guard as finished — the SSE stream stays open so
-                // the orchestrator can resume and emit subsequent events.
+                // For Suspended termination, suppress the finish event.
+                // The SSE stream stays open so the frontend can render
+                // interactive UI for tool parts in `input-available` state
+                // (e.g. color picker, user question). The user's interaction
+                // submits via addToolOutput → decision channel → orchestrator
+                // resumes and emits subsequent events on the same stream.
                 if matches!(termination, TerminationReason::Suspended) {
                     let mut events = Vec::new();
                     if self.text_open {
                         events.push(self.close_text());
                     }
                     events.extend(self.close_all_reasoning());
-                    events.push(UIStreamEvent::finish_with_reason("tool-calls"));
                     return events;
                 }
                 self.guard.mark_finished();
@@ -682,8 +683,8 @@ mod tests {
 
     #[test]
     fn run_finish_suspended_emits_tool_calls_finish_without_guard() {
-        // Suspended RunFinish emits finish(tool-calls) to signal the
-        // frontend, but does NOT mark the guard — stream stays open.
+        // Suspended RunFinish is suppressed — stream stays open for
+        // frontend tool interaction via the same SSE connection.
         let mut enc = AiSdkEncoder::new();
         let events = enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t1".into(),
@@ -691,18 +692,19 @@ mod tests {
             result: None,
             termination: TerminationReason::Suspended,
         });
-        assert_eq!(events.len(), 1);
-        assert!(matches!(
-            &events[0],
-            UIStreamEvent::Finish { finish_reason, .. } if finish_reason.as_deref() == Some("tool-calls")
-        ));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, UIStreamEvent::Finish { .. })),
+            "suspended should not emit finish"
+        );
         // Guard should NOT be set — subsequent events should still work
         let text_events = enc.on_agent_event(&AgentEvent::TextDelta {
             delta: "resumed".into(),
         });
         assert!(
             !text_events.is_empty(),
-            "guard should not block after suspended finish"
+            "guard should not block after suspended"
         );
     }
 
@@ -995,10 +997,7 @@ mod tests {
             .iter()
             .filter(|e| matches!(e, UIStreamEvent::Finish { .. }))
             .count();
-        assert_eq!(
-            finish_count, 1,
-            "RunFinish(Suspended) should emit finish(tool-calls)"
-        );
+        assert_eq!(finish_count, 0, "RunFinish(Suspended) should be suppressed");
 
         // Phase 2: resume → ToolCallResumed → continued execution → real finish
         all.extend(enc.on_agent_event(&AgentEvent::ToolCallResumed {
@@ -1019,14 +1018,14 @@ mod tests {
             termination: TerminationReason::NaturalEnd,
         }));
 
-        // Two finishes: tool-calls (suspend) + stop (natural end)
+        // One finish: only the real NaturalEnd (suspended was suppressed)
         let finish_count = all
             .iter()
             .filter(|e| matches!(e, UIStreamEvent::Finish { .. }))
             .count();
         assert_eq!(
-            finish_count, 2,
-            "should have two finish events (tool-calls + stop)"
+            finish_count, 1,
+            "should have one finish event (natural end only)"
         );
 
         // Resumed text should appear
