@@ -426,12 +426,26 @@ fn encode_history_messages(messages: Vec<Message>) -> Vec<Value> {
                     continue;
                 };
 
-                part.insert(
-                    "state".to_string(),
-                    Value::String("output-available".into()),
-                );
-                part.insert("output".to_string(), parse_tool_message_output(&message));
-                part.insert("providerExecuted".to_string(), Value::Bool(true));
+                // Check if this tool message represents a suspended tool
+                // (the runtime appends "suspended: awaiting" messages for
+                // suspended tool calls). Suspended tools should show as
+                // input-available so the frontend renders its interactive UI.
+                let output_text = parse_tool_message_output(&message);
+                let is_suspended = output_text
+                    .as_str()
+                    .map_or(false, |s| s.contains("suspended"));
+
+                if is_suspended {
+                    // Keep state as input-available (set during tool part creation)
+                    // so the frontend renders the color picker / user input UI.
+                } else {
+                    part.insert(
+                        "state".to_string(),
+                        Value::String("output-available".into()),
+                    );
+                    part.insert("output".to_string(), output_text);
+                    part.insert("providerExecuted".to_string(), Value::Bool(true));
+                }
             }
         }
     }
