@@ -77,6 +77,7 @@ pub struct AgentRuntime {
     pub(crate) profile_store:
         Option<Arc<dyn awaken_contract::contract::profile_store::ProfileStore>>,
     pub(crate) active_runs: ActiveRunRegistry,
+    pub(crate) registry_set: Option<crate::registry::traits::RegistrySet>,
     #[cfg(feature = "a2a")]
     composite_registry: Option<Arc<CompositeAgentSpecRegistry>>,
 }
@@ -88,9 +89,21 @@ impl AgentRuntime {
             storage: None,
             profile_store: None,
             active_runs: ActiveRunRegistry::new(),
+            registry_set: None,
             #[cfg(feature = "a2a")]
             composite_registry: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_registry_set(mut self, set: crate::registry::traits::RegistrySet) -> Self {
+        self.registry_set = Some(set);
+        self
+    }
+
+    /// Access the registry set for capability discovery.
+    pub fn registry_set(&self) -> Option<&crate::registry::traits::RegistrySet> {
+        self.registry_set.as_ref()
     }
 
     #[must_use]

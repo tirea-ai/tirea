@@ -55,6 +55,7 @@ pub fn build_router() -> Router<AppState> {
         .merge(health_routes())
         .merge(thread_routes())
         .merge(run_routes())
+        .merge(crate::config_routes::config_routes())
         .merge(ai_sdk_routes())
         .merge(ag_ui_routes())
         .merge(a2a_routes())

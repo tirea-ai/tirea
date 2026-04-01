@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+use awaken_contract::contract::config_store::ConfigStore;
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_runtime::{AgentResolver, AgentRuntime};
 use parking_lot::Mutex;
@@ -93,6 +94,9 @@ pub struct AppState {
     /// Per-run replay buffers for SSE stream resumption.
     /// Stores `(buffer, created_at)` so stale entries can be purged.
     pub replay_buffers: Arc<Mutex<HashMap<String, (Arc<EventReplayBuffer>, Instant)>>>,
+    /// Unified configuration store for agents, models, providers, etc.
+    /// `None` if config management API is not enabled.
+    pub config_store: Option<Arc<dyn ConfigStore>>,
 }
 
 impl AppState {
@@ -111,7 +115,14 @@ impl AppState {
             resolver,
             config,
             replay_buffers: Arc::new(Mutex::new(HashMap::new())),
+            config_store: None,
         }
+    }
+
+    /// Set the config store for management API.
+    pub fn with_config_store(mut self, store: Arc<dyn ConfigStore>) -> Self {
+        self.config_store = Some(store);
+        self
     }
 
     /// Insert a replay buffer for the given key, tracking creation time.
