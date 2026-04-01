@@ -9,6 +9,8 @@ pub mod memory_mailbox;
 
 #[cfg(feature = "file")]
 pub mod file;
+#[cfg(feature = "file")]
+pub mod file_config;
 
 #[cfg(feature = "postgres")]
 pub mod postgres;
@@ -18,6 +20,8 @@ pub use memory_mailbox::InMemoryMailboxStore;
 
 #[cfg(feature = "file")]
 pub use file::FileStore;
+#[cfg(feature = "file")]
+pub use file_config::FileConfigStore;
 
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresStore;

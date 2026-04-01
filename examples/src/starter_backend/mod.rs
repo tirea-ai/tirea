@@ -21,6 +21,7 @@ use awaken_contract::contract::inference::ContextWindowPolicy;
 use awaken_contract::contract::storage::ThreadRunStore;
 use awaken_contract::contract::tool::Tool;
 use awaken_contract::registry_spec::AgentSpec;
+use awaken_contract::registry_spec::ModelSpec;
 use awaken_ext_generative_ui::{A2uiPlugin, json_render, openui};
 use awaken_ext_mcp::{McpPlugin, McpServerConnectionConfig, McpToolRegistryManager};
 use awaken_ext_observability::{InMemorySink, ObservabilityPlugin};
@@ -39,7 +40,6 @@ use awaken_runtime::plugins::Plugin;
 use awaken_runtime::policies::{
     ConsecutiveErrorsPolicy, StopConditionPlugin, StopPolicy, TimeoutPolicy, TokenBudgetPolicy,
 };
-use awaken_runtime::registry::traits::ModelEntry;
 use awaken_server::app::{AppState, ServerConfig};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::routes::build_router;
@@ -647,9 +647,10 @@ Deterministic compatibility directives:\n\
         .with_provider("default", executor)
         .with_model(
             "default",
-            ModelEntry {
+            ModelSpec {
+                id: "default".into(),
                 provider: "default".into(),
-                model_name: args.model.clone(),
+                model: args.model.clone(),
             },
         )
         .with_thread_run_store(file_store.clone() as Arc<dyn ThreadRunStore>)

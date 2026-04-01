@@ -26,8 +26,11 @@ pub use model::{
 // ── agent card ──
 pub use contract::agent_card::{AgentCard, AgentCardAuth};
 
-// ── registry spec (AgentSpec, PluginConfigKey) ──
-pub use registry_spec::{AgentSpec, PluginConfigKey};
+// ── config store ──
+pub use contract::config_store::{ConfigNamespace, ConfigRegistry, ConfigStore};
+
+// ── registry spec ──
+pub use registry_spec::{AgentSpec, McpServerSpec, ModelSpec, PluginConfigKey, ProviderSpec};
 
 // ── state ──
 pub use state::{

@@ -10,31 +10,41 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use awaken_contract::contract::executor::LlmExecutor;
+use awaken_contract::registry_spec::ModelSpec;
 
 use crate::builder::BuildError;
 
 use super::memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapToolRegistry,
 };
-use super::traits::{ModelEntry, RegistrySet};
+use super::traits::RegistrySet;
 
 /// Serializable system configuration covering models and agents.
 ///
 /// Providers are not included because they hold trait objects (`Arc<dyn LlmExecutor>`)
 /// that cannot be deserialized. Pass them to [`AgentSystemConfig::build_registries`] instead.
+///
+/// **Note**: `ModelConfig` (the former inline type) has been replaced by
+/// [`ModelSpec`] from `awaken-contract`. The JSON format uses inline objects
+/// keyed by model ID, which are converted to `ModelSpec` (with `id` populated
+/// from the key) during `build_registries`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSystemConfig {
     /// Model definitions keyed by model ID.
+    /// The key becomes `ModelSpec.id`.
     #[serde(default)]
-    pub models: HashMap<String, ModelConfig>,
+    pub models: HashMap<String, InlineModelConfig>,
     /// Agent definitions.
     #[serde(default)]
     pub agents: Vec<awaken_contract::registry_spec::AgentSpec>,
 }
 
-/// Maps a model ID to a provider and the actual model name for API calls.
+/// Inline model config used in `AgentSystemConfig` JSON.
+///
+/// Lacks `id` because the key in the `models` map serves as the ID.
+/// Converted to [`ModelSpec`] during `build_registries`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelConfig {
+pub struct InlineModelConfig {
     /// Provider ID — must match a key in the `providers` map passed to `build_registries`.
     pub provider: String,
     /// Actual model name sent to the LLM API.
@@ -58,9 +68,10 @@ impl AgentSystemConfig {
         for (id, cfg) in &self.models {
             model_reg.register_model(
                 id.clone(),
-                ModelEntry {
+                ModelSpec {
+                    id: id.clone(),
                     provider: cfg.provider.clone(),
-                    model_name: cfg.model.clone(),
+                    model: cfg.model.clone(),
                 },
             )?;
         }
@@ -206,10 +217,11 @@ mod tests {
 
         let reg = config.build_registries(providers).unwrap();
 
-        // Verify model registry
+        // Verify model registry returns ModelSpec
         let model = reg.models.get_model("m1").unwrap();
+        assert_eq!(model.id, "m1");
         assert_eq!(model.provider, "stub");
-        assert_eq!(model.model_name, "test-model");
+        assert_eq!(model.model, "test-model");
 
         // Verify agent registry
         let agent = reg.agents.get_agent("a1").unwrap();
@@ -229,7 +241,7 @@ mod tests {
                 let mut m = HashMap::new();
                 m.insert(
                     "opus".to_string(),
-                    ModelConfig {
+                    InlineModelConfig {
                         provider: "anthropic".to_string(),
                         model: "claude-opus-4-0-20250514".to_string(),
                     },

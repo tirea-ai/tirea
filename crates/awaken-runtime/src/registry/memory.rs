@@ -9,9 +9,9 @@ use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::tool::Tool;
 
 use super::traits::{
-    AgentSpecRegistry, ModelEntry, ModelRegistry, PluginSource, ProviderRegistry, ToolRegistry,
+    AgentSpecRegistry, ModelRegistry, PluginSource, ProviderRegistry, ToolRegistry,
 };
-use awaken_contract::registry_spec::AgentSpec;
+use awaken_contract::registry_spec::{AgentSpec, ModelSpec};
 
 // ---------------------------------------------------------------------------
 // MapRegistry<V> — generic in-memory registry
@@ -70,7 +70,7 @@ impl<V: Clone> MapRegistry<V> {
 // ---------------------------------------------------------------------------
 
 pub type MapToolRegistry = MapRegistry<Arc<dyn Tool>>;
-pub type MapModelRegistry = MapRegistry<ModelEntry>;
+pub type MapModelRegistry = MapRegistry<ModelSpec>;
 pub type MapProviderRegistry = MapRegistry<Arc<dyn LlmExecutor>>;
 pub type MapAgentSpecRegistry = MapRegistry<AgentSpec>;
 pub type MapPluginSource = MapRegistry<Arc<dyn Plugin>>;
@@ -95,7 +95,7 @@ impl MapModelRegistry {
     pub fn register_model(
         &mut self,
         id: impl Into<String>,
-        entry: ModelEntry,
+        entry: ModelSpec,
     ) -> Result<(), BuildError> {
         self.register(id, entry, |msg| {
             BuildError::ModelRegistryConflict(format!("model {msg}"))
@@ -152,14 +152,20 @@ impl ToolRegistry for MapToolRegistry {
 }
 
 impl ModelRegistry for MapModelRegistry {
-    fn get_model(&self, id: &str) -> Option<&ModelEntry> {
-        self.get(id)
+    fn get_model(&self, id: &str) -> Option<ModelSpec> {
+        self.get(id).cloned()
+    }
+    fn model_ids(&self) -> Vec<String> {
+        self.ids()
     }
 }
 
 impl ProviderRegistry for MapProviderRegistry {
     fn get_provider(&self, id: &str) -> Option<Arc<dyn LlmExecutor>> {
         self.get_cloned(id)
+    }
+    fn provider_ids(&self) -> Vec<String> {
+        self.ids()
     }
 }
 
@@ -176,6 +182,9 @@ impl AgentSpecRegistry for MapAgentSpecRegistry {
 impl PluginSource for MapPluginSource {
     fn get_plugin(&self, id: &str) -> Option<Arc<dyn Plugin>> {
         self.get_cloned(id)
+    }
+    fn plugin_ids(&self) -> Vec<String> {
+        self.ids()
     }
 }
 

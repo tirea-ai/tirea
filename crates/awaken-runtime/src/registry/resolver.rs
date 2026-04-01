@@ -19,7 +19,7 @@ use crate::phase::ExecutionEnv;
 pub struct ResolvedAgent {
     /// The source agent specification.
     pub spec: Arc<AgentSpec>,
-    /// Actual model name for API calls (resolved from ModelEntry, may differ from spec.model).
+    /// Actual model name for API calls (resolved from ModelSpec, may differ from spec.model).
     pub model: String,
     pub tools: HashMap<String, Arc<dyn Tool>>,
     pub llm_executor: Arc<dyn LlmExecutor>,

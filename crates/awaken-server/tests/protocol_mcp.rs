@@ -8,8 +8,8 @@ use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::registry_spec::AgentSpec;
+use awaken_contract::registry_spec::ModelSpec;
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_runtime::registry::traits::ModelEntry;
 use awaken_server::app::{AppState, ServerConfig};
 use awaken_server::routes::build_router;
 use awaken_stores::memory::InMemoryStore;
@@ -64,9 +64,10 @@ fn make_mcp_app() -> axum::Router {
         let builder = AgentRuntimeBuilder::new()
             .with_model(
                 "test-model",
-                ModelEntry {
+                ModelSpec {
+                    id: String::new(),
                     provider: "mock".into(),
-                    model_name: "mock-model".into(),
+                    model: "mock-model".into(),
                 },
             )
             .with_provider("mock", Arc::new(EchoExecutor))
@@ -303,9 +304,10 @@ async fn stdio_e2e_full_flow() {
         let builder = AgentRuntimeBuilder::new()
             .with_model(
                 "test-model",
-                ModelEntry {
+                ModelSpec {
+                    id: String::new(),
                     provider: "mock".into(),
-                    model_name: "mock-model".into(),
+                    model: "mock-model".into(),
                 },
             )
             .with_provider("mock", Arc::new(EchoExecutor))

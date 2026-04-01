@@ -16,10 +16,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use awaken_contract::registry_spec::ModelSpec;
 use awaken_contract::registry_spec::{AgentSpec, RemoteEndpoint};
 use awaken_runtime::builder::AgentRuntimeBuilder;
 use awaken_runtime::engine::executor::GenaiExecutor;
-use awaken_runtime::registry::traits::ModelEntry;
 use awaken_server::app::{AppState, ServerConfig};
 use awaken_server::mailbox::{Mailbox, MailboxConfig};
 use awaken_server::routes::build_router;
@@ -68,7 +68,7 @@ fn build_genai_client() -> genai::Client {
 }
 
 fn resolve_openai_compatible_adapter(
-    model_name: &str,
+    model: &str,
     adapter_override: Option<&str>,
 ) -> genai::adapter::AdapterKind {
     use genai::adapter::AdapterKind;
@@ -89,7 +89,7 @@ fn resolve_openai_compatible_adapter(
     }
 }
 
-fn infer_openai_compatible_adapter(model_name: &str) -> genai::adapter::AdapterKind {
+fn infer_openai_compatible_adapter(model: &str) -> genai::adapter::AdapterKind {
     use genai::adapter::AdapterKind;
 
     let inferred = AdapterKind::from_model(model_name).unwrap_or(AdapterKind::OpenAI);
@@ -202,7 +202,8 @@ async fn a2a_loopback_orchestrator_delegates_to_worker() {
             .with_provider("default", executor)
             .with_model(
                 "default",
-                ModelEntry {
+                ModelSpec {
+                    id: String::new(),
                     provider: "default".into(),
                     model_name,
                 },

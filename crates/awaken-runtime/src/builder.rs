@@ -14,8 +14,9 @@ use crate::registry::composite::{CompositeAgentSpecRegistry, RemoteAgentSource};
 use crate::registry::memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapToolRegistry,
 };
-use crate::registry::traits::{AgentSpecRegistry, ModelEntry, RegistrySet};
+use crate::registry::traits::{AgentSpecRegistry, RegistrySet};
 use crate::runtime::AgentRuntime;
+use awaken_contract::registry_spec::ModelSpec;
 
 /// Error returned when the builder cannot construct the runtime.
 #[derive(Debug, thiserror::Error)]
@@ -107,7 +108,7 @@ impl AgentRuntimeBuilder {
     }
 
     /// Register a model entry by ID.
-    pub fn with_model(mut self, id: impl Into<String>, entry: ModelEntry) -> Self {
+    pub fn with_model(mut self, id: impl Into<String>, entry: ModelSpec) -> Self {
         if let Err(e) = self.models.register_model(id, entry) {
             self.errors.push(e);
         }
@@ -213,10 +214,10 @@ impl AgentRuntimeBuilder {
         };
 
         let resolver: Arc<dyn crate::registry::AgentResolver> = Arc::new(
-            crate::registry::resolve::RegistrySetResolver::new(registry_set),
+            crate::registry::resolve::RegistrySetResolver::new(registry_set.clone()),
         );
 
-        let mut runtime = AgentRuntime::new(resolver);
+        let mut runtime = AgentRuntime::new(resolver).with_registry_set(registry_set);
 
         #[cfg(feature = "a2a")]
         if let Some(composite) = composite_registry {
@@ -317,9 +318,10 @@ mod tests {
             .with_tool("echo", Arc::new(MockTool { id: "echo".into() }))
             .with_model(
                 "test-model",
-                ModelEntry {
+                ModelSpec {
+                    id: String::new(),
                     provider: "mock".into(),
-                    model_name: "mock-model".into(),
+                    model: "mock-model".into(),
                 },
             )
             .with_provider("mock", Arc::new(MockExecutor))
@@ -355,9 +357,10 @@ mod tests {
             .with_agent_specs(vec![spec1, spec2])
             .with_model(
                 "m",
-                ModelEntry {
+                ModelSpec {
+                    id: String::new(),
                     provider: "p".into(),
-                    model_name: "n".into(),
+                    model: "n".into(),
                 },
             )
             .with_provider("p", Arc::new(MockExecutor))
@@ -389,9 +392,10 @@ mod tests {
             )
             .with_model(
                 "test-model",
-                ModelEntry {
+                ModelSpec {
+                    id: String::new(),
                     provider: "mock".into(),
-                    model_name: "claude-test".into(),
+                    model: "claude-test".into(),
                 },
             )
             .with_provider("mock", Arc::new(MockExecutor))
@@ -411,9 +415,10 @@ mod tests {
         let runtime = AgentRuntimeBuilder::new()
             .with_model(
                 "m",
-                ModelEntry {
+                ModelSpec {
+                    id: String::new(),
                     provider: "p".into(),
-                    model_name: "n".into(),
+                    model: "n".into(),
                 },
             )
             .with_provider("p", Arc::new(MockExecutor))
@@ -470,9 +475,10 @@ mod tests {
             .with_tool("t3", Arc::new(MockTool { id: "t3".into() }))
             .with_model(
                 "m",
-                ModelEntry {
+                ModelSpec {
+                    id: String::new(),
                     provider: "p".into(),
-                    model_name: "n".into(),
+                    model: "n".into(),
                 },
             )
             .with_provider("p", Arc::new(MockExecutor))
@@ -519,9 +525,10 @@ mod tests {
             .with_agent_spec(spec)
             .with_model(
                 "m",
-                ModelEntry {
+                ModelSpec {
+                    id: String::new(),
                     provider: "p".into(),
-                    model_name: "n".into(),
+                    model: "n".into(),
                 },
             )
             .with_provider("p", Arc::new(MockExecutor))
@@ -543,9 +550,10 @@ mod tests {
             .with_agent_spec(spec)
             .with_model(
                 "gpt-4",
-                ModelEntry {
+                ModelSpec {
+                    id: String::new(),
                     provider: "openai".into(),
-                    model_name: "gpt-4-turbo".into(),
+                    model: "gpt-4-turbo".into(),
                 },
             )
             .with_provider("openai", Arc::new(MockExecutor))
@@ -615,9 +623,10 @@ mod tests {
             .with_agent_spec(spec)
             .with_model(
                 "m",
-                ModelEntry {
+                ModelSpec {
+                    id: String::new(),
                     provider: "p".into(),
-                    model_name: "n".into(),
+                    model: "n".into(),
                 },
             )
             .with_provider("p", Arc::new(MockExecutor))
@@ -669,16 +678,18 @@ mod tests {
         let result = AgentRuntimeBuilder::new()
             .with_model(
                 "dup-model",
-                ModelEntry {
+                ModelSpec {
+                    id: String::new(),
                     provider: "p".into(),
-                    model_name: "n1".into(),
+                    model: "n1".into(),
                 },
             )
             .with_model(
                 "dup-model",
-                ModelEntry {
+                ModelSpec {
+                    id: String::new(),
                     provider: "p".into(),
-                    model_name: "n2".into(),
+                    model: "n2".into(),
                 },
             )
             .build();

@@ -9,9 +9,9 @@
 //! feature flag is active.
 
 // ── Building agents ──
-pub use crate::registry::traits::ModelEntry;
 pub use crate::{AgentRuntime, AgentRuntimeBuilder, BuildError, RunRequest, RuntimeError};
 pub use crate::{AgentSpec, PluginConfigKey};
+pub use awaken_contract::registry_spec::ModelSpec;
 
 // ── Plugin system ──
 pub use crate::CancellationToken;

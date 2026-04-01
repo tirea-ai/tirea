@@ -114,7 +114,7 @@ fn resolve_model_and_executor(
         _ => executor,
     };
 
-    Ok((executor, model.model_name.clone()))
+    Ok((executor, model.model.clone()))
 }
 
 // ---------------------------------------------------------------------------
@@ -380,13 +380,13 @@ mod tests {
         MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry,
         MapToolRegistry,
     };
-    use crate::registry::traits::ModelEntry;
     use async_trait::async_trait;
     use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest};
     use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
     use awaken_contract::contract::tool::{
         ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
     };
+    use awaken_contract::registry_spec::ModelSpec;
     use serde_json::Value;
 
     // -- Mock Tool --
@@ -451,7 +451,7 @@ mod tests {
     fn build_registries(
         tools: Vec<(&str, Arc<dyn Tool>)>,
         model_id: &str,
-        model_entry: ModelEntry,
+        model_entry: ModelSpec,
         provider_id: &str,
         executor: Arc<dyn LlmExecutor>,
         plugins: Vec<(&str, Arc<dyn Plugin>)>,
@@ -465,6 +465,8 @@ mod tests {
         }
 
         let mut model_reg = MapModelRegistry::new();
+        let mut model_entry = model_entry;
+        model_entry.id = model_id.to_string();
         model_reg
             .register_model(model_id, model_entry)
             .expect("duplicate model in test");
@@ -519,9 +521,10 @@ mod tests {
                 ("write", Arc::new(MockTool { id: "write".into() })),
             ],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "anthropic".into(),
-                model_name: "claude-opus-4-20250514".into(),
+                model: "claude-opus-4-20250514".into(),
             },
             "anthropic",
             Arc::new(MockExecutor),
@@ -543,9 +546,10 @@ mod tests {
         let regs = build_registries(
             vec![],
             "m",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -573,9 +577,10 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -599,9 +604,10 @@ mod tests {
         let regs = build_registries(
             vec![],
             "other-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -618,9 +624,10 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "missing-provider".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "other-provider",
             Arc::new(MockExecutor),
@@ -642,9 +649,10 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -675,9 +683,10 @@ mod tests {
                 ),
             ],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -709,9 +718,10 @@ mod tests {
                 ),
             ],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -747,9 +757,10 @@ mod tests {
                 ("exec", Arc::new(MockTool { id: "exec".into() })),
             ],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -770,9 +781,10 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -834,9 +846,10 @@ mod tests {
                 ("write", Arc::new(MockTool { id: "write".into() })),
             ],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "claude-test".into(),
+                model: "claude-test".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -861,9 +874,10 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -916,9 +930,10 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -945,9 +960,10 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -982,9 +998,10 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1007,9 +1024,10 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1058,9 +1076,10 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1093,9 +1112,10 @@ mod tests {
                 }),
             )],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1135,9 +1155,10 @@ mod tests {
                 }),
             )],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1172,9 +1193,10 @@ mod tests {
                 }),
             )],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1207,9 +1229,10 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1231,9 +1254,10 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1255,9 +1279,10 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1279,9 +1304,10 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1298,9 +1324,10 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "claude-opus-4-20250514".into(),
+                model: "claude-opus-4-20250514".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1325,9 +1352,10 @@ mod tests {
                 ("write", Arc::new(MockTool { id: "write".into() })),
             ],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1349,9 +1377,10 @@ mod tests {
         let regs = build_registries(
             vec![("read", Arc::new(MockTool { id: "read".into() }))],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1371,9 +1400,10 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1404,9 +1434,10 @@ mod tests {
         model_reg
             .register_model(
                 "test-model",
-                ModelEntry {
+                ModelSpec {
+                    id: "test-model".into(),
                     provider: "p".into(),
-                    model_name: "n".into(),
+                    model: "n".into(),
                 },
             )
             .unwrap();
@@ -1512,9 +1543,10 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1545,9 +1577,10 @@ mod tests {
         let regs_without = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1567,9 +1600,10 @@ mod tests {
         let regs_with = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1602,9 +1636,10 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1645,9 +1680,10 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),
@@ -1684,9 +1720,10 @@ mod tests {
         let regs = build_registries(
             vec![],
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "p".into(),
-                model_name: "n".into(),
+                model: "n".into(),
             },
             "p",
             Arc::new(MockExecutor),

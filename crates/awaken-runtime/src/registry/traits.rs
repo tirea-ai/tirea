@@ -6,7 +6,7 @@ use crate::plugins::Plugin;
 use awaken_contract::contract::executor::LlmExecutor;
 use awaken_contract::contract::tool::Tool;
 
-use awaken_contract::registry_spec::AgentSpec;
+use awaken_contract::registry_spec::{AgentSpec, ModelSpec};
 
 // ---------------------------------------------------------------------------
 // ToolRegistry
@@ -21,22 +21,17 @@ pub trait ToolRegistry: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// ModelEntry + ModelRegistry
+// ModelRegistry
 // ---------------------------------------------------------------------------
-
-/// Model definition: maps a model ID to a provider and model name.
-#[derive(Debug, Clone)]
-pub struct ModelEntry {
-    /// ProviderRegistry ID.
-    pub provider: String,
-    /// Actual model name for the API call.
-    pub model_name: String,
-}
 
 /// Lookup interface for model definitions.
 pub trait ModelRegistry: Send + Sync {
-    /// Get a model entry by its ID.
-    fn get_model(&self, id: &str) -> Option<&ModelEntry>;
+    /// Get a model spec by its ID.
+    fn get_model(&self, id: &str) -> Option<ModelSpec>;
+    /// List all registered model IDs.
+    fn model_ids(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -47,6 +42,10 @@ pub trait ModelRegistry: Send + Sync {
 pub trait ProviderRegistry: Send + Sync {
     /// Get a provider (LLM executor) by its ID.
     fn get_provider(&self, id: &str) -> Option<Arc<dyn LlmExecutor>>;
+    /// List all registered provider IDs.
+    fn provider_ids(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -72,6 +71,10 @@ pub trait AgentSpecRegistry: Send + Sync {
 pub trait PluginSource: Send + Sync {
     /// Get a plugin by its ID.
     fn get_plugin(&self, id: &str) -> Option<Arc<dyn Plugin>>;
+    /// List all registered plugin IDs.
+    fn plugin_ids(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 // ---------------------------------------------------------------------------

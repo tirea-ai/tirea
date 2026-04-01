@@ -1,6 +1,7 @@
 pub mod active_agent;
 pub mod agent_card;
 pub mod bundle;
+pub mod config_store;
 pub mod content;
 pub mod context_message;
 pub mod event;

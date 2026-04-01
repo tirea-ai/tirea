@@ -10,8 +10,8 @@ use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequ
 use awaken_contract::contract::inference::{StopReason, StreamResult, TokenUsage};
 use awaken_contract::contract::transport::Transcoder;
 use awaken_contract::registry_spec::AgentSpec;
+use awaken_contract::registry_spec::ModelSpec;
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_runtime::registry::traits::ModelEntry;
 use awaken_server::app::{AppState, ServerConfig};
 use awaken_server::protocols::{
     acp::encoder::AcpEncoder, ag_ui::encoder::AgUiEncoder, ai_sdk_v6::encoder::AiSdkEncoder,
@@ -55,9 +55,10 @@ fn make_app() -> axum::Router {
         let builder = AgentRuntimeBuilder::new()
             .with_model(
                 "test-model",
-                ModelEntry {
+                ModelSpec {
+                    id: String::new(),
                     provider: "mock".into(),
-                    model_name: "mock-model".into(),
+                    model: "mock-model".into(),
                 },
             )
             .with_provider("mock", Arc::new(ImmediateExecutor))

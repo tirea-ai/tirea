@@ -12,8 +12,8 @@ use awaken_contract::contract::tool::{
     Tool, ToolCallContext, ToolDescriptor, ToolError, ToolOutput, ToolResult,
 };
 use awaken_contract::registry_spec::AgentSpec;
+use awaken_contract::registry_spec::ModelSpec;
 use awaken_runtime::builder::AgentRuntimeBuilder;
-use awaken_runtime::registry::traits::ModelEntry;
 use awaken_server::app::{AppState, ServerConfig};
 use awaken_server::routes::build_router;
 use awaken_stores::memory::InMemoryStore;
@@ -180,9 +180,10 @@ fn make_ag_ui_app(llm: Arc<dyn LlmExecutor>, tools: Vec<(String, Arc<dyn Tool>)>
     let mut builder = AgentRuntimeBuilder::new()
         .with_model(
             "test-model",
-            ModelEntry {
+            ModelSpec {
+                id: String::new(),
                 provider: "mock".into(),
-                model_name: "mock-model".into(),
+                model: "mock-model".into(),
             },
         )
         .with_provider("mock", llm)
@@ -982,9 +983,10 @@ async fn multiple_sequential_runs_on_same_thread() {
         AgentRuntimeBuilder::new()
             .with_model(
                 "test-model",
-                ModelEntry {
+                ModelSpec {
+                    id: String::new(),
                     provider: "mock".into(),
-                    model_name: "mock-model".into(),
+                    model: "mock-model".into(),
                 },
             )
             .with_provider("mock", llm)

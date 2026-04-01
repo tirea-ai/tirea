@@ -8,19 +8,22 @@ pub mod config;
 pub mod memory;
 pub mod resolve;
 pub mod resolver;
+pub mod store_backed;
 pub mod traits;
 
-pub use awaken_contract::registry_spec::AgentSpec;
+pub use awaken_contract::registry_spec::{AgentSpec, ModelSpec};
 #[cfg(feature = "a2a")]
 pub use composite::{CompositeAgentSpecRegistry, DiscoveryError, RemoteAgentSource};
-pub use config::{AgentSystemConfig, ModelConfig};
+pub use config::AgentSystemConfig;
 pub use memory::{
     MapAgentSpecRegistry, MapModelRegistry, MapPluginSource, MapProviderRegistry, MapRegistry,
     MapToolRegistry,
 };
 pub use resolve::ResolveError;
 pub use resolver::{AgentResolver, ResolvedAgent};
+pub use store_backed::{
+    AgentNamespace, ModelNamespace, StoreBackedAgentRegistry, StoreBackedModelRegistry,
+};
 pub use traits::{
-    AgentSpecRegistry, ModelEntry, ModelRegistry, PluginSource, ProviderRegistry, RegistrySet,
-    ToolRegistry,
+    AgentSpecRegistry, ModelRegistry, PluginSource, ProviderRegistry, RegistrySet, ToolRegistry,
 };

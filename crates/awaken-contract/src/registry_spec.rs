@@ -56,11 +56,11 @@ pub trait PluginConfigKey: 'static + Send + Sync {
 ///
 /// Also serves as the runtime behavior configuration passed to hooks via
 /// `PhaseContext.agent_spec`. Plugins read their typed config via `spec.config::<K>()`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentSpec {
     /// Unique agent identifier.
     pub id: String,
-    /// ModelRegistry ID — resolved to a [`super::traits::ModelEntry`].
+    /// ModelRegistry ID — resolved to a [`ModelSpec`].
     pub model: String,
     /// System prompt sent to the LLM.
     pub system_prompt: String,
@@ -113,7 +113,7 @@ pub struct AgentSpec {
 }
 
 /// Remote endpoint configuration for agents running on external A2A servers.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RemoteEndpoint {
     pub base_url: String,
     #[serde(default)]
@@ -146,6 +146,110 @@ fn default_poll_interval() -> u64 {
 
 fn default_timeout() -> u64 {
     300_000
+}
+
+// ---------------------------------------------------------------------------
+// ModelSpec
+// ---------------------------------------------------------------------------
+
+/// Serializable model definition — maps a model ID to a provider and API model name.
+///
+/// Used for both persistent configuration (ConfigStore) and runtime registry lookup.
+/// Replaces the former `ModelConfig` (config.rs) and `ModelEntry` (traits.rs).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ModelSpec {
+    /// Unique identifier (e.g. "claude-opus", "gpt-4o").
+    pub id: String,
+    /// Provider spec ID (references a [`ProviderSpec`]).
+    pub provider: String,
+    /// Actual model name sent to the LLM API (e.g. "claude-opus-4-6").
+    pub model: String,
+}
+
+// ---------------------------------------------------------------------------
+// ProviderSpec
+// ---------------------------------------------------------------------------
+
+/// Serializable LLM provider configuration.
+///
+/// Captures everything needed to construct a `GenaiExecutor` via
+/// `genai::Client::builder()`: adapter kind, API key, base URL, timeout.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ProviderSpec {
+    /// Unique identifier (e.g. "anthropic", "openai-proxy").
+    pub id: String,
+    /// Adapter kind: "anthropic", "openai", "gemini", "ollama", "cohere".
+    /// Maps to `genai::adapter::AdapterKind` for model routing.
+    pub adapter: String,
+    /// API key. Falls back to the adapter's default environment variable
+    /// (e.g. `ANTHROPIC_API_KEY`) if absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// Base URL override (e.g. "https://my-proxy.example.com/v1").
+    /// `None` = use the adapter's default endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// Request timeout in seconds.
+    #[serde(default = "default_provider_timeout_secs")]
+    pub timeout_secs: u64,
+    /// Extra headers to include in every request (e.g. org ID, proxy auth).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub headers: HashMap<String, String>,
+}
+
+fn default_provider_timeout_secs() -> u64 {
+    300
+}
+
+impl Default for ProviderSpec {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            adapter: String::new(),
+            api_key: None,
+            base_url: None,
+            timeout_secs: default_provider_timeout_secs(),
+            headers: HashMap::new(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// McpServerSpec
+// ---------------------------------------------------------------------------
+
+/// Serializable MCP server connection configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct McpServerSpec {
+    /// Unique identifier (e.g. "my-mcp-server").
+    pub id: String,
+    /// Transport type: "stdio", "sse", "streamable-http".
+    pub transport: String,
+    /// Command for stdio transport.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Args for stdio transport.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    /// URL for HTTP-based transports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Environment variables to set for the process.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub env: HashMap<String, String>,
+}
+
+impl Default for McpServerSpec {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            transport: "stdio".into(),
+            command: None,
+            args: Vec::new(),
+            url: None,
+            env: HashMap::new(),
+        }
+    }
 }
 
 impl Default for AgentSpec {
@@ -458,5 +562,108 @@ mod tests {
         assert_eq!(spec.id, "reviewer");
         assert_eq!(spec.model, "claude-opus");
         assert!(spec.active_hook_filter.contains("permission"));
+    }
+
+    // -- ModelSpec tests --
+
+    #[test]
+    fn model_spec_serde_roundtrip() {
+        let spec = ModelSpec {
+            id: "claude-opus".into(),
+            provider: "anthropic".into(),
+            model: "claude-opus-4-6".into(),
+        };
+        let json = serde_json::to_value(&spec).unwrap();
+        let parsed: ModelSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, spec);
+    }
+
+    // -- ProviderSpec tests --
+
+    #[test]
+    fn provider_spec_serde_roundtrip() {
+        let spec = ProviderSpec {
+            id: "anthropic".into(),
+            adapter: "anthropic".into(),
+            api_key: Some("sk-test".into()),
+            base_url: Some("https://proxy.example.com/v1".into()),
+            timeout_secs: 120,
+            headers: {
+                let mut h = HashMap::new();
+                h.insert("X-Org-Id".into(), "org-123".into());
+                h
+            },
+        };
+        let json = serde_json::to_value(&spec).unwrap();
+        let parsed: ProviderSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, spec);
+    }
+
+    #[test]
+    fn provider_spec_defaults() {
+        let json_str = r#"{"id":"p","adapter":"openai"}"#;
+        let spec: ProviderSpec = serde_json::from_str(json_str).unwrap();
+        assert_eq!(spec.timeout_secs, 300);
+        assert!(spec.api_key.is_none());
+        assert!(spec.base_url.is_none());
+        assert!(spec.headers.is_empty());
+    }
+
+    #[test]
+    fn provider_spec_omits_empty_optional_fields() {
+        let spec = ProviderSpec {
+            id: "ollama".into(),
+            adapter: "ollama".into(),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&spec).unwrap();
+        assert!(json.get("api_key").is_none());
+        assert!(json.get("base_url").is_none());
+        assert!(json.get("headers").is_none());
+    }
+
+    // -- McpServerSpec tests --
+
+    #[test]
+    fn mcp_server_spec_serde_roundtrip() {
+        let spec = McpServerSpec {
+            id: "my-server".into(),
+            transport: "stdio".into(),
+            command: Some("npx".into()),
+            args: vec!["-y".into(), "@my/mcp-server".into()],
+            url: None,
+            env: {
+                let mut e = HashMap::new();
+                e.insert("NODE_ENV".into(), "production".into());
+                e
+            },
+        };
+        let json = serde_json::to_value(&spec).unwrap();
+        let parsed: McpServerSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, spec);
+    }
+
+    #[test]
+    fn mcp_server_spec_http_transport() {
+        let spec = McpServerSpec {
+            id: "remote".into(),
+            transport: "sse".into(),
+            url: Some("https://mcp.example.com/sse".into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&spec).unwrap();
+        assert_eq!(json["transport"], "sse");
+        assert_eq!(json["url"], "https://mcp.example.com/sse");
+        assert!(json.get("command").is_none());
+    }
+
+    #[test]
+    fn mcp_server_spec_defaults() {
+        let json_str = r#"{"id":"s","transport":"stdio"}"#;
+        let spec: McpServerSpec = serde_json::from_str(json_str).unwrap();
+        assert!(spec.command.is_none());
+        assert!(spec.args.is_empty());
+        assert!(spec.url.is_none());
+        assert!(spec.env.is_empty());
     }
 }
