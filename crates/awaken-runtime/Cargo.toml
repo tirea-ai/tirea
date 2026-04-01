@@ -32,6 +32,7 @@ test-utils = []
 awaken-runtime = { path = ".", features = ["test-utils"] }
 awaken-stores = { workspace = true }
 tokio = { workspace = true }
+proptest = { workspace = true }
 
 [lints]
 workspace = true

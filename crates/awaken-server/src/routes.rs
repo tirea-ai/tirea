@@ -1259,4 +1259,192 @@ mod tests {
         assert_eq!(p.offset, Some(5));
         assert_eq!(p.limit, 100);
     }
+
+    // ── Health check integration tests ──────────────────────────────
+
+    mod health_integration {
+        use super::*;
+        use crate::app::{AppState, ServerConfig};
+        use crate::mailbox::{Mailbox, MailboxConfig};
+        use awaken_runtime::AgentRuntime;
+        use awaken_stores::{InMemoryMailboxStore, InMemoryStore};
+        use http_body_util::BodyExt;
+        use std::sync::Arc;
+        use tower::ServiceExt;
+
+        struct StubResolver;
+        impl awaken_runtime::AgentResolver for StubResolver {
+            fn resolve(
+                &self,
+                agent_id: &str,
+            ) -> Result<awaken_runtime::ResolvedAgent, awaken_runtime::RuntimeError> {
+                Err(awaken_runtime::RuntimeError::AgentNotFound {
+                    agent_id: agent_id.to_string(),
+                })
+            }
+        }
+
+        fn make_app_state() -> AppState {
+            let runtime = Arc::new(AgentRuntime::new(Arc::new(StubResolver)));
+            let mailbox_store = Arc::new(InMemoryMailboxStore::new());
+            let mailbox = Arc::new(Mailbox::new(
+                runtime.clone(),
+                mailbox_store,
+                "test".to_string(),
+                MailboxConfig::default(),
+            ));
+            let store = Arc::new(InMemoryStore::new());
+            AppState::new(
+                runtime,
+                mailbox,
+                store.clone(),
+                Arc::new(StubResolver),
+                ServerConfig::default(),
+            )
+        }
+
+        #[tokio::test]
+        async fn health_live_returns_200() {
+            let state = make_app_state();
+            let app = build_router().with_state(state);
+
+            let req = axum::http::Request::builder()
+                .uri("/health/live")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+
+        #[tokio::test]
+        async fn health_ready_returns_healthy_with_working_store() {
+            let state = make_app_state();
+            let app = build_router().with_state(state);
+
+            let req = axum::http::Request::builder()
+                .uri("/health")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+
+            let body = resp.into_body().collect().await.unwrap().to_bytes();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["status"], "healthy");
+            assert_eq!(json["components"]["store"], "ok");
+            assert_eq!(json["components"]["runtime"], "ok");
+        }
+
+        #[tokio::test]
+        async fn health_ready_returns_unhealthy_with_failing_store() {
+            use awaken_contract::contract::message::Message;
+            use awaken_contract::contract::storage::{
+                RunPage, RunQuery, RunRecord, RunStore, StorageError, ThreadRunStore, ThreadStore,
+            };
+            use awaken_contract::thread::{Thread, ThreadMetadata};
+
+            /// Store that always returns errors.
+            struct FailingStore;
+
+            #[async_trait::async_trait]
+            impl ThreadStore for FailingStore {
+                async fn load_thread(&self, _id: &str) -> Result<Option<Thread>, StorageError> {
+                    Err(StorageError::Io("simulated failure".into()))
+                }
+                async fn save_thread(&self, _t: &Thread) -> Result<(), StorageError> {
+                    Err(StorageError::Io("simulated failure".into()))
+                }
+                async fn delete_thread(&self, _id: &str) -> Result<(), StorageError> {
+                    Err(StorageError::Io("simulated failure".into()))
+                }
+                async fn list_threads(
+                    &self,
+                    _offset: usize,
+                    _limit: usize,
+                ) -> Result<Vec<String>, StorageError> {
+                    Err(StorageError::Io("simulated failure".into()))
+                }
+                async fn load_messages(
+                    &self,
+                    _id: &str,
+                ) -> Result<Option<Vec<Message>>, StorageError> {
+                    Err(StorageError::Io("simulated failure".into()))
+                }
+                async fn save_messages(
+                    &self,
+                    _id: &str,
+                    _msgs: &[Message],
+                ) -> Result<(), StorageError> {
+                    Err(StorageError::Io("simulated failure".into()))
+                }
+                async fn delete_messages(&self, _id: &str) -> Result<(), StorageError> {
+                    Err(StorageError::Io("simulated failure".into()))
+                }
+                async fn update_thread_metadata(
+                    &self,
+                    _id: &str,
+                    _meta: ThreadMetadata,
+                ) -> Result<(), StorageError> {
+                    Err(StorageError::Io("simulated failure".into()))
+                }
+            }
+
+            #[async_trait::async_trait]
+            impl RunStore for FailingStore {
+                async fn create_run(&self, _r: &RunRecord) -> Result<(), StorageError> {
+                    Err(StorageError::Io("simulated failure".into()))
+                }
+                async fn load_run(&self, _id: &str) -> Result<Option<RunRecord>, StorageError> {
+                    Err(StorageError::Io("simulated failure".into()))
+                }
+                async fn latest_run(&self, _id: &str) -> Result<Option<RunRecord>, StorageError> {
+                    Err(StorageError::Io("simulated failure".into()))
+                }
+                async fn list_runs(&self, _q: &RunQuery) -> Result<RunPage, StorageError> {
+                    Err(StorageError::Io("simulated failure".into()))
+                }
+            }
+
+            #[async_trait::async_trait]
+            impl ThreadRunStore for FailingStore {
+                async fn checkpoint(
+                    &self,
+                    _thread_id: &str,
+                    _messages: &[Message],
+                    _run: &RunRecord,
+                ) -> Result<(), StorageError> {
+                    Err(StorageError::Io("simulated failure".into()))
+                }
+            }
+
+            let runtime = Arc::new(AgentRuntime::new(Arc::new(StubResolver)));
+            let mailbox_store = Arc::new(InMemoryMailboxStore::new());
+            let mailbox = Arc::new(Mailbox::new(
+                runtime.clone(),
+                mailbox_store,
+                "test".to_string(),
+                MailboxConfig::default(),
+            ));
+            let state = AppState::new(
+                runtime,
+                mailbox,
+                Arc::new(FailingStore),
+                Arc::new(StubResolver),
+                ServerConfig::default(),
+            );
+            let app = build_router().with_state(state);
+
+            let req = axum::http::Request::builder()
+                .uri("/health")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+            let body = resp.into_body().collect().await.unwrap().to_bytes();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["status"], "unhealthy");
+            assert_eq!(json["components"]["store"], "error");
+        }
+    }
 }

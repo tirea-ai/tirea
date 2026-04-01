@@ -614,4 +614,166 @@ mod tests {
         let exec = GenaiExecutor::new().with_timeout(Duration::from_secs(30));
         assert_eq!(exec.default_timeout, Duration::from_secs(30));
     }
+
+    // -----------------------------------------------------------------------
+    // Inference timeout pattern tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test(start_paused = true)]
+    async fn timeout_fires_for_slow_future() {
+        // Verifies the exact tokio::time::timeout pattern used in GenaiExecutor::execute
+        let timeout_dur = Duration::from_secs(120);
+
+        let slow = async {
+            tokio::time::sleep(Duration::from_secs(200)).await;
+            Ok::<&str, String>("should not reach")
+        };
+
+        let result = tokio::time::timeout(timeout_dur, slow).await;
+        assert!(result.is_err(), "should have timed out");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timeout_maps_to_inference_timeout_error() {
+        let timeout_dur = Duration::from_millis(50);
+
+        let slow = async {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            Ok::<(), ()>(())
+        };
+
+        let result = tokio::time::timeout(timeout_dur, slow).await;
+        assert!(result.is_err());
+
+        // Verify the mapping pattern used in GenaiExecutor::execute
+        let mapped = result.map_err(|_| {
+            InferenceExecutionError::Timeout(format!(
+                "inference timeout after {}s",
+                timeout_dur.as_secs()
+            ))
+        });
+        assert!(
+            matches!(mapped, Err(InferenceExecutionError::Timeout(ref msg)) if msg.contains("timeout"))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timeout_does_not_fire_for_fast_future() {
+        let timeout_dur = Duration::from_secs(120);
+
+        let fast = async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            Ok::<&str, String>("done")
+        };
+
+        let result = tokio::time::timeout(timeout_dur, fast).await;
+        assert!(result.is_ok(), "fast future should not time out");
+        assert_eq!(result.unwrap().unwrap(), "done");
+    }
+
+    // -----------------------------------------------------------------------
+    // Error classification tests for WebAdapterCall and WebModelCall
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn map_error_web_adapter_call_429() {
+        use genai::adapter::AdapterKind;
+        use reqwest::header::HeaderMap;
+
+        let err = genai::Error::WebAdapterCall {
+            adapter_kind: AdapterKind::OpenAI,
+            webc_error: genai::webc::Error::ResponseFailedStatus {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                body: "rate limited".into(),
+                headers: Box::new(HeaderMap::new()),
+            },
+        };
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::RateLimited(_)),
+            "expected RateLimited, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_web_model_call_429() {
+        use genai::ModelIden;
+        use genai::adapter::AdapterKind;
+        use reqwest::header::HeaderMap;
+
+        let err = genai::Error::WebModelCall {
+            model_iden: ModelIden::new(AdapterKind::OpenAI, "gpt-4o"),
+            webc_error: genai::webc::Error::ResponseFailedStatus {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                body: "rate limited".into(),
+                headers: Box::new(HeaderMap::new()),
+            },
+        };
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::RateLimited(_)),
+            "expected RateLimited, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_web_adapter_call_503() {
+        use genai::adapter::AdapterKind;
+        use reqwest::header::HeaderMap;
+
+        let err = genai::Error::WebAdapterCall {
+            adapter_kind: AdapterKind::Anthropic,
+            webc_error: genai::webc::Error::ResponseFailedStatus {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                body: "overloaded".into(),
+                headers: Box::new(HeaderMap::new()),
+            },
+        };
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::Provider(_)),
+            "expected Provider, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_web_model_call_504() {
+        use genai::ModelIden;
+        use genai::adapter::AdapterKind;
+        use reqwest::header::HeaderMap;
+
+        let err = genai::Error::WebModelCall {
+            model_iden: ModelIden::new(AdapterKind::OpenAI, "gpt-4o"),
+            webc_error: genai::webc::Error::ResponseFailedStatus {
+                status: StatusCode::GATEWAY_TIMEOUT,
+                body: "gateway timeout".into(),
+                headers: Box::new(HeaderMap::new()),
+            },
+        };
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::Timeout(_)),
+            "expected Timeout, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_web_adapter_call_non_status_error_falls_through() {
+        use genai::adapter::AdapterKind;
+
+        // webc::Error that is NOT ResponseFailedStatus — extract_status_code returns None
+        let err = genai::Error::WebAdapterCall {
+            adapter_kind: AdapterKind::OpenAI,
+            webc_error: genai::webc::Error::ResponseFailedNotJson {
+                content_type: "text/html".into(),
+                body: "not json".into(),
+            },
+        };
+        let mapped = GenaiExecutor::map_error(err);
+        // Falls through to string matching → Provider
+        assert!(
+            matches!(mapped, InferenceExecutionError::Provider(_)),
+            "expected Provider, got {mapped:?}"
+        );
+    }
 }

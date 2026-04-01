@@ -299,4 +299,104 @@ mod tests {
         let config: ShutdownConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.timeout_secs, 60);
     }
+
+    // ── Replay buffer management (standalone map) ───────────────────
+
+    /// Helper: create a standalone replay buffer map (same type as `AppState::replay_buffers`)
+    /// to test purge logic without needing a full `AppState`.
+    fn make_replay_map() -> Arc<Mutex<HashMap<String, (Arc<EventReplayBuffer>, Instant)>>> {
+        Arc::new(Mutex::new(HashMap::new()))
+    }
+
+    #[test]
+    fn insert_and_get_replay_buffer() {
+        let map = make_replay_map();
+        let buf = Arc::new(EventReplayBuffer::new(16));
+        buf.push_json(r#"{"hello":1}"#);
+
+        map.lock()
+            .insert("run-1".to_string(), (Arc::clone(&buf), Instant::now()));
+
+        let retrieved = map.lock().get("run-1").map(|(b, _)| Arc::clone(b));
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().current_seq(), 1);
+    }
+
+    #[test]
+    fn remove_replay_buffer_works() {
+        let map = make_replay_map();
+        let buf = Arc::new(EventReplayBuffer::new(16));
+        map.lock()
+            .insert("run-2".to_string(), (buf, Instant::now()));
+
+        assert!(map.lock().get("run-2").is_some());
+        map.lock().remove("run-2");
+        assert!(map.lock().get("run-2").is_none());
+    }
+
+    #[test]
+    fn purge_stale_replay_buffers_removes_all_with_zero_max_age() {
+        let map = make_replay_map();
+        let buf = Arc::new(EventReplayBuffer::new(16));
+        map.lock()
+            .insert("run-a".to_string(), (Arc::clone(&buf), Instant::now()));
+        map.lock()
+            .insert("run-b".to_string(), (buf, Instant::now()));
+
+        assert_eq!(map.lock().len(), 2);
+
+        // Purge with max_age=ZERO → everything older than "now" is removed.
+        let now = Instant::now();
+        map.lock().retain(|_key, (_buf, created_at)| {
+            now.duration_since(*created_at) < std::time::Duration::ZERO
+        });
+
+        assert_eq!(map.lock().len(), 0);
+    }
+
+    #[test]
+    fn purge_stale_replay_buffers_keeps_recent() {
+        let map = make_replay_map();
+        let buf = Arc::new(EventReplayBuffer::new(16));
+        map.lock()
+            .insert("run-c".to_string(), (buf, Instant::now()));
+
+        // Purge with large max_age → nothing should be removed.
+        let now = Instant::now();
+        let max_age = std::time::Duration::from_secs(3600);
+        map.lock()
+            .retain(|_key, (_buf, created_at)| now.duration_since(*created_at) < max_age);
+
+        assert_eq!(map.lock().len(), 1);
+    }
+
+    #[test]
+    fn purge_stale_mixed_ages() {
+        let map = make_replay_map();
+        // Insert one "old" buffer by backdating the instant with checked_sub.
+        let old_instant = Instant::now()
+            .checked_sub(std::time::Duration::from_secs(120))
+            .unwrap_or_else(Instant::now);
+        let recent_instant = Instant::now();
+
+        let buf_old = Arc::new(EventReplayBuffer::new(16));
+        let buf_recent = Arc::new(EventReplayBuffer::new(16));
+
+        map.lock()
+            .insert("old-run".to_string(), (buf_old, old_instant));
+        map.lock()
+            .insert("recent-run".to_string(), (buf_recent, recent_instant));
+
+        assert_eq!(map.lock().len(), 2);
+
+        // Purge buffers older than 60 seconds.
+        let now = Instant::now();
+        let max_age = std::time::Duration::from_secs(60);
+        map.lock()
+            .retain(|_key, (_buf, created_at)| now.duration_since(*created_at) < max_age);
+
+        assert_eq!(map.lock().len(), 1);
+        assert!(map.lock().get("recent-run").is_some());
+        assert!(map.lock().get("old-run").is_none());
+    }
 }

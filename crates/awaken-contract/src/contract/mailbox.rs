@@ -259,6 +259,138 @@ pub trait MailboxStore: Send + Sync {
 mod tests {
     use super::*;
 
+    // ── Property-based tests ──
+
+    mod proptest_mailbox {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_mailbox_status() -> impl Strategy<Value = MailboxJobStatus> {
+            prop_oneof![
+                Just(MailboxJobStatus::Queued),
+                Just(MailboxJobStatus::Claimed),
+                Just(MailboxJobStatus::Accepted),
+                Just(MailboxJobStatus::Cancelled),
+                Just(MailboxJobStatus::Superseded),
+                Just(MailboxJobStatus::DeadLetter),
+            ]
+        }
+
+        fn arb_mailbox_job() -> impl Strategy<Value = MailboxJob> {
+            (
+                arb_mailbox_status(),
+                0u32..100,
+                0u64..u64::MAX,
+                0u64..u64::MAX,
+                0u8..=255u8,
+                1u32..20,
+                0u64..1_000_000,
+            )
+                .prop_map(
+                    |(
+                        status,
+                        attempt_count,
+                        created_at,
+                        available_at,
+                        priority,
+                        max_attempts,
+                        generation,
+                    )| {
+                        let claim_token = match status {
+                            MailboxJobStatus::Claimed => Some("token-123".to_string()),
+                            _ => None,
+                        };
+                        let claimed_by = match status {
+                            MailboxJobStatus::Claimed => Some("consumer-1".to_string()),
+                            _ => None,
+                        };
+                        MailboxJob {
+                            job_id: "job-prop".to_string(),
+                            mailbox_id: "thread-prop".to_string(),
+                            agent_id: "agent-prop".to_string(),
+                            messages: vec![Message::user("proptest")],
+                            origin: MailboxJobOrigin::User,
+                            sender_id: None,
+                            parent_run_id: None,
+                            request_extras: None,
+                            priority,
+                            dedupe_key: None,
+                            generation,
+                            status,
+                            available_at,
+                            attempt_count,
+                            max_attempts,
+                            last_error: None,
+                            claim_token,
+                            claimed_by,
+                            lease_until: if status == MailboxJobStatus::Claimed {
+                                Some(created_at.saturating_add(30_000))
+                            } else {
+                                None
+                            },
+                            created_at,
+                            updated_at: created_at,
+                        }
+                    },
+                )
+        }
+
+        proptest! {
+            #[test]
+            fn terminal_status_is_terminal(status in arb_mailbox_status()) {
+                let expected_terminal = matches!(
+                    status,
+                    MailboxJobStatus::Accepted
+                    | MailboxJobStatus::Cancelled
+                    | MailboxJobStatus::Superseded
+                    | MailboxJobStatus::DeadLetter
+                );
+                prop_assert_eq!(status.is_terminal(), expected_terminal);
+            }
+
+            #[test]
+            fn claimed_job_always_has_claim_token(job in arb_mailbox_job()) {
+                if job.status == MailboxJobStatus::Claimed {
+                    prop_assert!(
+                        job.claim_token.is_some(),
+                        "Claimed job must have a claim_token"
+                    );
+                }
+            }
+
+            #[test]
+            fn queued_job_never_has_claim_token(job in arb_mailbox_job()) {
+                if job.status == MailboxJobStatus::Queued {
+                    prop_assert!(
+                        job.claim_token.is_none(),
+                        "Queued job must not have a claim_token"
+                    );
+                }
+            }
+
+            #[test]
+            fn mailbox_job_serde_roundtrip(job in arb_mailbox_job()) {
+                let json = serde_json::to_string(&job).unwrap();
+                let parsed: MailboxJob = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(parsed.job_id, job.job_id);
+                prop_assert_eq!(parsed.status, job.status);
+                prop_assert_eq!(parsed.attempt_count, job.attempt_count);
+                prop_assert_eq!(parsed.priority, job.priority);
+                prop_assert_eq!(parsed.generation, job.generation);
+                prop_assert_eq!(parsed.claim_token, job.claim_token);
+                prop_assert_eq!(parsed.available_at, job.available_at);
+                prop_assert_eq!(parsed.max_attempts, job.max_attempts);
+            }
+
+            #[test]
+            fn mailbox_job_status_serde_roundtrip_prop(status in arb_mailbox_status()) {
+                let json = serde_json::to_string(&status).unwrap();
+                let parsed: MailboxJobStatus = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(parsed, status);
+            }
+        }
+    }
+
     #[test]
     fn is_terminal_returns_true_for_terminal_states() {
         assert!(MailboxJobStatus::Accepted.is_terminal());

@@ -1981,4 +1981,163 @@ mod tests {
         assert!(matches!(job.origin, MailboxJobOrigin::A2A));
         assert_eq!(job.parent_run_id.as_deref(), Some("parent-123"));
     }
+
+    // ── INLINE_CLAIM_GUARD_MS ───────────────────────────────────────
+
+    #[test]
+    fn inline_claim_guard_is_reasonable() {
+        assert_eq!(INLINE_CLAIM_GUARD_MS, 60_000);
+        // Must be a sane value — the old broken value was u64::MAX.
+        assert!(INLINE_CLAIM_GUARD_MS < u64::MAX / 2);
+    }
+
+    // ── Nack exponential backoff ────────────────────────────────────
+
+    #[test]
+    fn nack_backoff_progression() {
+        let config = MailboxConfig::default();
+        // Formula from execute_job: 2^(attempt_count.saturating_sub(1).min(6))
+        // attempt_count is 0-based on the job at nack time, but incremented
+        // by the store before re-queue. The backoff in execute_job uses
+        // job.attempt_count which is the pre-nack value.
+        for (attempt_count, expected_ms) in [
+            (1, 250),   // 2^0 * 250 = 250
+            (2, 500),   // 2^1 * 250 = 500
+            (3, 1000),  // 2^2 * 250 = 1000
+            (4, 2000),  // 2^3 * 250 = 2000
+            (5, 4000),  // 2^4 * 250 = 4000
+            (6, 8000),  // 2^5 * 250 = 8000
+            (7, 16000), // 2^6 * 250 = 16000
+        ] {
+            let backoff_factor = 2u64.pow((attempt_count as u32).saturating_sub(1).min(6));
+            let delay =
+                (config.default_retry_delay_ms * backoff_factor).min(config.max_retry_delay_ms);
+            assert_eq!(delay, expected_ms, "attempt_count={attempt_count}");
+        }
+    }
+
+    #[test]
+    fn nack_backoff_caps_at_max() {
+        let config = MailboxConfig {
+            max_retry_delay_ms: 5000,
+            default_retry_delay_ms: 1000,
+            ..Default::default()
+        };
+        // attempt_count=4 → 2^3 = 8 → 1000*8 = 8000, capped at 5000
+        let backoff_factor = 2u64.pow(3);
+        let delay = (config.default_retry_delay_ms * backoff_factor).min(config.max_retry_delay_ms);
+        assert_eq!(delay, 5000);
+    }
+
+    #[test]
+    fn nack_backoff_zero_attempt_is_base_delay() {
+        let config = MailboxConfig::default();
+        // attempt_count=0 → saturating_sub(1)=0, but min(6)=0 → 2^0=1 → 250*1=250
+        // However in practice attempt_count starts at 1 after first claim.
+        let backoff_factor = 2u64.pow(0u32.saturating_sub(1).min(6));
+        let delay = (config.default_retry_delay_ms * backoff_factor).min(config.max_retry_delay_ms);
+        assert_eq!(delay, 250);
+    }
+
+    #[test]
+    fn nack_backoff_high_attempt_stays_capped() {
+        let config = MailboxConfig::default();
+        // attempt_count=100 → min(6)=6 → 2^6=64 → 250*64=16000 < 30000
+        let backoff_factor = 2u64.pow(100u32.saturating_sub(1).min(6));
+        let delay = (config.default_retry_delay_ms * backoff_factor).min(config.max_retry_delay_ms);
+        assert_eq!(delay, 16000);
+
+        // With smaller max: attempt_count=100 → 250*64=16000, capped at 10000
+        let config2 = MailboxConfig {
+            max_retry_delay_ms: 10_000,
+            ..Default::default()
+        };
+        let delay2 =
+            (config2.default_retry_delay_ms * backoff_factor).min(config2.max_retry_delay_ms);
+        assert_eq!(delay2, 10_000);
+    }
+
+    // ── GC idle workers ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn gc_idle_workers_removes_idle_with_no_jobs() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store.clone());
+
+        // Manually insert an Idle worker (no jobs in store for this thread).
+        {
+            let mut workers = mailbox.workers.write().await;
+            workers.insert(
+                "thread-gc".to_string(),
+                Arc::new(Mutex::new(MailboxWorker::default())),
+            );
+        }
+
+        // Verify the worker is present.
+        assert!(mailbox.workers.read().await.contains_key("thread-gc"));
+
+        // Run GC — idle worker with no queued jobs should be removed.
+        mailbox.gc_idle_workers().await;
+
+        assert!(
+            !mailbox.workers.read().await.contains_key("thread-gc"),
+            "idle worker with no queued jobs should be removed"
+        );
+    }
+
+    #[tokio::test]
+    async fn gc_idle_workers_keeps_worker_with_queued_jobs() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store.clone());
+
+        // Enqueue a job for the thread (background so it goes to store).
+        let request =
+            RunRequest::new("thread-gc-keep", vec![Message::user("hi")]).with_agent_id("agent-1");
+        mailbox.submit_background(request).await.unwrap();
+
+        // Force the worker to Idle status (simulating it finished one job
+        // but another is queued).
+        {
+            let mut workers = mailbox.workers.write().await;
+            workers.insert(
+                "thread-gc-keep".to_string(),
+                Arc::new(Mutex::new(MailboxWorker::default())),
+            );
+        }
+
+        // Run GC — worker has queued/claimed jobs, so it should be kept.
+        mailbox.gc_idle_workers().await;
+
+        // The worker should still exist because there are jobs in the store.
+        let has_jobs = !store
+            .list_jobs(
+                "thread-gc-keep",
+                Some(&[MailboxJobStatus::Queued, MailboxJobStatus::Claimed]),
+                1,
+                0,
+            )
+            .await
+            .unwrap()
+            .is_empty();
+        if has_jobs {
+            assert!(
+                mailbox.workers.read().await.contains_key("thread-gc-keep"),
+                "idle worker with queued jobs should NOT be removed"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn gc_idle_workers_noop_when_empty() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store);
+
+        // No workers exist — GC should not panic.
+        mailbox.gc_idle_workers().await;
+        let workers = mailbox.workers.read().await;
+        assert!(workers.is_empty());
+    }
 }

@@ -749,4 +749,320 @@ mod tests {
             AgentEvent::ToolCallReady { id, name, .. } if id == "tc1" && name == "calculator"
         )));
     }
+
+    // ========================================================================
+    // Fault injection — executor failure modes
+    // ========================================================================
+
+    // -- Error mid-stream after N successful events --
+
+    struct FailAfterNEventsExecutor {
+        events_before_fail: usize,
+    }
+
+    #[async_trait]
+    impl awaken_contract::contract::executor::LlmExecutor for FailAfterNEventsExecutor {
+        async fn execute(
+            &self,
+            _request: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            Err(InferenceExecutionError::Provider("not implemented".into()))
+        }
+
+        fn execute_stream(
+            &self,
+            _request: InferenceRequest,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<InferenceStream, InferenceExecutionError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            let n = self.events_before_fail;
+            Box::pin(async move {
+                let mut events: Vec<Result<LlmStreamEvent, InferenceExecutionError>> = Vec::new();
+                for i in 0..n {
+                    events.push(Ok(LlmStreamEvent::TextDelta(format!("chunk-{i}"))));
+                }
+                events.push(Err(InferenceExecutionError::Provider(
+                    "injected mid-stream failure".into(),
+                )));
+                Ok(Box::pin(futures::stream::iter(events)) as InferenceStream)
+            })
+        }
+
+        fn name(&self) -> &str {
+            "fail-after-n"
+        }
+    }
+
+    fn make_failing_agent(events_before_fail: usize) -> ResolvedAgent {
+        ResolvedAgent::new(
+            "test-agent",
+            "test-model",
+            "system prompt",
+            Arc::new(FailAfterNEventsExecutor { events_before_fail }),
+        )
+    }
+
+    #[tokio::test]
+    async fn error_after_zero_events_returns_inference_failed() {
+        let agent = make_failing_agent(0);
+        let sink = VecEventSink::new();
+        let mut it = 0u64;
+        let mut ot = 0u64;
+
+        let err = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+            .await
+            .unwrap_err();
+
+        match err {
+            AgentLoopError::InferenceFailed(msg) => {
+                assert!(msg.contains("injected mid-stream failure"));
+            }
+            other => panic!("expected InferenceFailed, got: {other:?}"),
+        }
+
+        // No events should have been emitted
+        assert!(sink.take().is_empty());
+    }
+
+    #[tokio::test]
+    async fn error_after_n_events_emits_partial_deltas_then_fails() {
+        let agent = make_failing_agent(3);
+        let sink = VecEventSink::new();
+        let mut it = 0u64;
+        let mut ot = 0u64;
+
+        let err = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, AgentLoopError::InferenceFailed(_)));
+
+        // 3 TextDelta events should have been emitted before the error
+        let events = sink.take();
+        let text_deltas: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::TextDelta { .. }))
+            .collect();
+        assert_eq!(text_deltas.len(), 3);
+    }
+
+    // -- Executor that immediately fails at execute_stream level --
+
+    struct ImmediateStreamFailExecutor;
+
+    #[async_trait]
+    impl awaken_contract::contract::executor::LlmExecutor for ImmediateStreamFailExecutor {
+        async fn execute(
+            &self,
+            _request: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            Err(InferenceExecutionError::Provider("execute failed".into()))
+        }
+
+        fn execute_stream(
+            &self,
+            _request: InferenceRequest,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<InferenceStream, InferenceExecutionError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async move {
+                Err(InferenceExecutionError::Provider(
+                    "stream creation failed".into(),
+                ))
+            })
+        }
+
+        fn name(&self) -> &str {
+            "immediate-fail"
+        }
+    }
+
+    #[tokio::test]
+    async fn executor_stream_creation_failure_surfaces_as_error() {
+        let agent = ResolvedAgent::new(
+            "test-agent",
+            "test-model",
+            "system prompt",
+            Arc::new(ImmediateStreamFailExecutor),
+        );
+        let sink = VecEventSink::new();
+        let mut it = 0u64;
+        let mut ot = 0u64;
+
+        let err = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+            .await
+            .unwrap_err();
+
+        match err {
+            AgentLoopError::InferenceFailed(msg) => {
+                assert!(msg.contains("stream creation failed"));
+            }
+            other => panic!("expected InferenceFailed, got: {other:?}"),
+        }
+    }
+
+    // -- Executor returns different error types --
+
+    #[tokio::test]
+    async fn rate_limited_error_surfaces_correctly() {
+        let agent = make_agent(vec![Err(InferenceExecutionError::RateLimited(
+            "429 too many requests".into(),
+        ))]);
+        let sink = VecEventSink::new();
+        let mut it = 0u64;
+        let mut ot = 0u64;
+
+        let err = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+            .await
+            .unwrap_err();
+
+        match err {
+            AgentLoopError::InferenceFailed(msg) => {
+                assert!(msg.contains("429 too many requests"));
+            }
+            other => panic!("expected InferenceFailed, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn timeout_error_surfaces_correctly() {
+        let agent = make_agent(vec![Err(InferenceExecutionError::Timeout(
+            "30s exceeded".into(),
+        ))]);
+        let sink = VecEventSink::new();
+        let mut it = 0u64;
+        let mut ot = 0u64;
+
+        let err = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+            .await
+            .unwrap_err();
+
+        match err {
+            AgentLoopError::InferenceFailed(msg) => {
+                assert!(msg.contains("30s exceeded"));
+            }
+            other => panic!("expected InferenceFailed, got: {other:?}"),
+        }
+    }
+
+    // -- Hanging executor with cancellation token --
+
+    struct HangingExecutor;
+
+    #[async_trait]
+    impl awaken_contract::contract::executor::LlmExecutor for HangingExecutor {
+        async fn execute(
+            &self,
+            _request: InferenceRequest,
+        ) -> Result<StreamResult, InferenceExecutionError> {
+            std::future::pending::<()>().await;
+            unreachable!()
+        }
+
+        fn execute_stream(
+            &self,
+            _request: InferenceRequest,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<InferenceStream, InferenceExecutionError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async move {
+                // Return a stream that never yields
+                let stream = futures::stream::pending();
+                Ok(Box::pin(stream) as InferenceStream)
+            })
+        }
+
+        fn name(&self) -> &str {
+            "hanging"
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hanging_executor_is_caught_by_cancellation_token() {
+        let agent = ResolvedAgent::new(
+            "test-agent",
+            "test-model",
+            "system prompt",
+            Arc::new(HangingExecutor),
+        );
+        let sink = VecEventSink::new();
+        let mut it = 0u64;
+        let mut ot = 0u64;
+
+        let token = CancellationToken::new();
+        let token_clone = token.clone();
+
+        // Schedule cancellation after 5 seconds
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            token_clone.cancel();
+        });
+
+        let result = execute_streaming(
+            &agent,
+            make_request(),
+            &sink,
+            Some(&token),
+            &mut it,
+            &mut ot,
+        )
+        .await
+        .unwrap();
+
+        // Cancelled runs return EndTurn, no panic, no hang
+        assert_eq!(result.stop_reason, Some(StopReason::EndTurn));
+        assert!(result.content.is_empty());
+        assert!(result.tool_calls.is_empty());
+    }
+
+    // -- Error after tool call start but before args complete --
+
+    #[tokio::test]
+    async fn error_mid_tool_call_returns_inference_error() {
+        let agent = make_agent(vec![
+            Ok(LlmStreamEvent::ToolCallStart {
+                id: "tc1".into(),
+                name: "search".into(),
+            }),
+            Ok(LlmStreamEvent::ToolCallDelta {
+                id: "tc1".into(),
+                args_delta: r#"{"q":"partial"#.into(),
+            }),
+            Err(InferenceExecutionError::Provider("connection reset".into())),
+        ]);
+        let sink = VecEventSink::new();
+        let mut it = 0u64;
+        let mut ot = 0u64;
+
+        let err = execute_streaming(&agent, make_request(), &sink, None, &mut it, &mut ot)
+            .await
+            .unwrap_err();
+
+        match err {
+            AgentLoopError::InferenceFailed(msg) => {
+                assert!(msg.contains("connection reset"));
+            }
+            other => panic!("expected InferenceFailed, got: {other:?}"),
+        }
+
+        // Events before the error should still have been emitted
+        let events = sink.take();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::ToolCallStart { .. }))
+        );
+    }
 }

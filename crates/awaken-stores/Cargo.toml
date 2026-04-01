@@ -20,6 +20,8 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "json"], defa
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 tempfile = "3"
+proptest = { workspace = true }
+futures = { workspace = true }
 
 [features]
 default = []

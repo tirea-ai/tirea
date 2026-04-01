@@ -1146,4 +1146,78 @@ mod tests {
         let reclaimed = store.claim("m-1", "c-1", 30_000, 2000, 1).await.unwrap();
         assert_eq!(reclaimed.len(), 1);
     }
+
+    // ── Property-based tests ──
+
+    mod proptest_memory_mailbox {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn concurrent_claim_at_most_one_winner(
+                num_claimers in 2usize..20,
+            ) {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    let store = Arc::new(InMemoryMailboxStore::new());
+                    let job = make_job("test-mailbox", "agent-prop");
+                    store.enqueue(&job).await.unwrap();
+
+                    let mut handles = vec![];
+                    for i in 0..num_claimers {
+                        let store = store.clone();
+                        handles.push(tokio::spawn(async move {
+                            store
+                                .claim(
+                                    "test-mailbox",
+                                    &format!("consumer-{i}"),
+                                    30_000,
+                                    1000,
+                                    1,
+                                )
+                                .await
+                        }));
+                    }
+
+                    let results = futures::future::join_all(handles).await;
+                    let winners: usize = results
+                        .iter()
+                        .filter(|r| {
+                            r.as_ref()
+                                .ok()
+                                .and_then(|inner| inner.as_ref().ok())
+                                .is_some_and(|jobs| !jobs.is_empty())
+                        })
+                        .count();
+                    // Exactly one claimer should win.
+                    assert_eq!(winners, 1, "expected exactly 1 winner, got {winners}");
+                });
+            }
+
+            #[test]
+            fn enqueue_then_claim_preserves_job_data(
+                priority in 0u8..=255u8,
+                max_attempts in 1u32..20,
+            ) {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    let store = InMemoryMailboxStore::new();
+                    let mut job = make_job("m-prop", "agent-prop");
+                    job.priority = priority;
+                    job.max_attempts = max_attempts;
+                    store.enqueue(&job).await.unwrap();
+
+                    let claimed = store.claim("m-prop", "consumer-1", 30_000, 1000, 1).await.unwrap();
+                    assert_eq!(claimed.len(), 1);
+                    let cj = &claimed[0];
+                    assert_eq!(cj.priority, priority);
+                    assert_eq!(cj.max_attempts, max_attempts);
+                    assert_eq!(cj.status, MailboxJobStatus::Claimed);
+                    assert!(cj.claim_token.is_some());
+                    assert_eq!(cj.claimed_by.as_deref(), Some("consumer-1"));
+                });
+            }
+        }
+    }
 }

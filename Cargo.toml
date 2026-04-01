@@ -51,6 +51,7 @@ reqwest = { version = "0.13", features = ["json"] }
 schemars = "1"
 jsonschema = "0.45"
 parking_lot = "0.12"
+proptest = "1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

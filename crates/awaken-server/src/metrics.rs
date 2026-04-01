@@ -141,4 +141,83 @@ mod tests {
             "expected metric names in output"
         );
     }
+
+    #[test]
+    fn active_runs_gauge_appears_in_output() {
+        install_recorder();
+        inc_active_runs();
+        inc_active_runs();
+        dec_active_runs();
+        let output = render().unwrap_or_default();
+        assert!(
+            output.contains("awaken_active_runs"),
+            "expected awaken_active_runs in metrics output"
+        );
+    }
+
+    #[test]
+    fn error_counter_multiple_classes_appear() {
+        install_recorder();
+        inc_errors("rate_limit");
+        inc_errors("timeout");
+        inc_errors("rate_limit"); // increment same class again
+        let output = render().unwrap_or_default();
+        assert!(
+            output.contains("awaken_errors_total"),
+            "expected awaken_errors_total in metrics output"
+        );
+    }
+
+    #[test]
+    fn sse_connections_gauge_appears_in_output() {
+        install_recorder();
+        inc_sse_connections();
+        inc_sse_connections();
+        dec_sse_connections();
+        let output = render().unwrap_or_default();
+        assert!(
+            output.contains("awaken_sse_connections"),
+            "expected awaken_sse_connections in metrics output"
+        );
+    }
+
+    #[test]
+    fn inference_metrics_appear_in_output() {
+        install_recorder();
+        inc_inference_requests("gpt-4", "ok");
+        inc_inference_requests("gpt-4", "error");
+        record_inference_duration(1.5);
+        let output = render().unwrap_or_default();
+        assert!(
+            output.contains("awaken_inference_requests_total"),
+            "expected awaken_inference_requests_total in metrics output"
+        );
+        assert!(
+            output.contains("awaken_inference_duration_seconds"),
+            "expected awaken_inference_duration_seconds in metrics output"
+        );
+    }
+
+    #[test]
+    fn run_duration_histogram_appears_in_output() {
+        install_recorder();
+        record_run_duration(0.5);
+        record_run_duration(2.0);
+        let output = render().unwrap_or_default();
+        assert!(
+            output.contains("awaken_run_duration_seconds"),
+            "expected awaken_run_duration_seconds in metrics output"
+        );
+    }
+
+    #[test]
+    fn mailbox_queue_depth_gauge_appears_in_output() {
+        install_recorder();
+        set_mailbox_queue_depth(42.0);
+        let output = render().unwrap_or_default();
+        assert!(
+            output.contains("awaken_mailbox_queue_depth"),
+            "expected awaken_mailbox_queue_depth in metrics output"
+        );
+    }
 }

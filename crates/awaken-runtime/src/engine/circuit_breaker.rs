@@ -284,4 +284,111 @@ mod tests {
             "error should mention circuit breaker: {msg}"
         );
     }
+
+    #[test]
+    fn half_open_allows_multiple_probes() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 2,
+            cooldown: Duration::from_millis(10),
+            half_open_max: 3,
+        };
+        let cb = CircuitBreaker::new(config);
+        // Trip the circuit
+        cb.record_failure("m");
+        cb.record_failure("m");
+        assert!(cb.check("m").is_err()); // Open
+
+        std::thread::sleep(Duration::from_millis(15));
+
+        // Should allow 3 probes in HalfOpen (first transitions Open→HalfOpen, counts as 1)
+        assert!(cb.check("m").is_ok()); // probe 1 (transition)
+        assert!(cb.check("m").is_ok()); // probe 2
+        assert!(cb.check("m").is_ok()); // probe 3
+        assert!(cb.check("m").is_err()); // probe 4 blocked
+    }
+
+    // ── Property-based tests ──
+
+    mod proptest_circuit_breaker {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn opens_exactly_at_threshold(
+                threshold in 1u32..20,
+                failures in 0u32..30,
+            ) {
+                let cb = CircuitBreaker::new(CircuitBreakerConfig {
+                    failure_threshold: threshold,
+                    cooldown: Duration::from_secs(60),
+                    half_open_max: 1,
+                });
+
+                for _ in 0..failures {
+                    cb.record_failure("model");
+                }
+
+                if failures >= threshold {
+                    prop_assert!(
+                        cb.check("model").is_err(),
+                        "should be open after {failures} >= {threshold} failures"
+                    );
+                } else {
+                    prop_assert!(
+                        cb.check("model").is_ok(),
+                        "should be closed after {failures} < {threshold} failures"
+                    );
+                }
+            }
+
+            #[test]
+            fn success_always_resets_to_closed(
+                pre_failures in 0u32..10,
+            ) {
+                let cb = CircuitBreaker::new(CircuitBreakerConfig {
+                    failure_threshold: 20, // high threshold so we stay closed
+                    cooldown: Duration::from_secs(60),
+                    half_open_max: 1,
+                });
+
+                for _ in 0..pre_failures {
+                    cb.record_failure("model");
+                }
+                cb.record_success("model");
+
+                // After success, a single failure should not trip threshold=20
+                cb.record_failure("model");
+                prop_assert!(
+                    cb.check("model").is_ok(),
+                    "circuit should be closed after success reset"
+                );
+            }
+
+            #[test]
+            fn independent_models_do_not_interfere(
+                failures_a in 0u32..10,
+                failures_b in 0u32..10,
+            ) {
+                let threshold = 5;
+                let cb = CircuitBreaker::new(CircuitBreakerConfig {
+                    failure_threshold: threshold,
+                    cooldown: Duration::from_secs(60),
+                    half_open_max: 1,
+                });
+
+                for _ in 0..failures_a {
+                    cb.record_failure("model-a");
+                }
+                for _ in 0..failures_b {
+                    cb.record_failure("model-b");
+                }
+
+                let a_expected_open = failures_a >= threshold;
+                let b_expected_open = failures_b >= threshold;
+                prop_assert_eq!(cb.check("model-a").is_err(), a_expected_open);
+                prop_assert_eq!(cb.check("model-b").is_err(), b_expected_open);
+            }
+        }
+    }
 }

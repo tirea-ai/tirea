@@ -780,4 +780,150 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(inner.call_count(), 3, "1 initial + 2 retries = 3 calls");
     }
+
+    // -----------------------------------------------------------------------
+    // Circuit breaker opens mid-retry
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn circuit_breaker_opens_during_retry_sequence() {
+        use crate::engine::circuit_breaker::CircuitBreakerConfig;
+
+        let cb = Arc::new(CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 2,
+            cooldown: Duration::from_secs(60),
+            half_open_max: 1,
+        }));
+        let inner = Arc::new(FailNThenSucceed::new(100)); // always fails
+        let policy = test_policy().with_max_retries(5);
+        let executor = RetryingExecutor::new(inner.clone(), policy).with_circuit_breaker(cb);
+
+        let result = executor.execute(test_request()).await;
+        assert!(result.is_err());
+        // 2 actual calls trip the CB (failure_threshold=2), 3rd attempt blocked by CB
+        assert_eq!(inner.call_count(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Circuit breaker independent per model in fallback
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn circuit_breaker_independent_per_model_in_fallback() {
+        use crate::engine::circuit_breaker::CircuitBreakerConfig;
+
+        let cb = Arc::new(CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 2,
+            cooldown: Duration::from_secs(60),
+            half_open_max: 1,
+        }));
+        // Pre-open circuit for primary model only
+        cb.record_failure("primary-model");
+        cb.record_failure("primary-model");
+
+        // Always succeeds (fail_count=0)
+        let inner = Arc::new(FailNThenSucceed::new(0));
+        let policy = test_policy()
+            .with_max_retries(0)
+            .with_fallback_model("fallback-model");
+        let executor = RetryingExecutor::new(inner.clone(), policy).with_circuit_breaker(cb);
+
+        let result = executor.execute(test_request()).await;
+        // Primary blocked by CB, fallback should succeed
+        assert!(result.is_ok());
+        // Only the fallback call was made (primary was blocked)
+        assert_eq!(inner.call_count(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Backoff sleep verification with paused time
+    // -----------------------------------------------------------------------
+
+    #[tokio::test(start_paused = true)]
+    async fn backoff_actually_sleeps() {
+        let inner = Arc::new(FailNThenSucceed::new(2));
+        let policy = LlmRetryPolicy::default()
+            .with_max_retries(3)
+            .with_backoff_base_ms(1000); // 1s base
+        let executor = RetryingExecutor::new(inner.clone(), policy);
+
+        let start = tokio::time::Instant::now();
+        let result = executor.execute(test_request()).await;
+        assert!(result.is_ok());
+
+        // With paused time, elapsed reflects actual sleep calls:
+        // Attempt 0 fails → sleep 1s (1000 * 2^0)
+        // Attempt 1 fails → sleep 2s (1000 * 2^1)
+        // Attempt 2 succeeds
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= Duration::from_secs(3),
+            "expected >= 3s backoff, got {elapsed:?}"
+        );
+    }
+
+    // ── Property-based tests ──
+
+    mod proptest_retry {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn llm_retry_policy_serde_roundtrip(
+                max_retries in 0u32..10,
+                backoff_base_ms in 0u64..10000,
+                num_fallbacks in 0usize..5,
+            ) {
+                let policy = LlmRetryPolicy {
+                    max_retries,
+                    fallback_models: (0..num_fallbacks).map(|i| format!("model-{i}")).collect(),
+                    backoff_base_ms,
+                };
+                let json = serde_json::to_string(&policy).unwrap();
+                let parsed: LlmRetryPolicy = serde_json::from_str(&json).unwrap();
+                prop_assert_eq!(parsed.max_retries, max_retries);
+                prop_assert_eq!(parsed.backoff_base_ms, backoff_base_ms);
+                prop_assert_eq!(parsed.fallback_models.len(), num_fallbacks);
+            }
+
+            #[test]
+            fn backoff_delay_is_monotonically_non_decreasing(
+                base_ms in 1u64..1000,
+            ) {
+                let policy = LlmRetryPolicy::default().with_backoff_base_ms(base_ms);
+                let mut prev = Duration::ZERO;
+                for attempt in 0..10u32 {
+                    let delay = policy.backoff_delay(attempt);
+                    prop_assert!(
+                        delay >= prev,
+                        "delay should be monotonically non-decreasing: attempt={attempt}, delay={delay:?}, prev={prev:?}"
+                    );
+                    prev = delay;
+                }
+            }
+
+            #[test]
+            fn backoff_delay_never_exceeds_cap(
+                base_ms in 0u64..10000,
+                attempt in 0u32..100,
+            ) {
+                let policy = LlmRetryPolicy::default().with_backoff_base_ms(base_ms);
+                let delay = policy.backoff_delay(attempt);
+                prop_assert!(
+                    delay <= Duration::from_millis(MAX_BACKOFF_MS),
+                    "delay {delay:?} exceeds {MAX_BACKOFF_MS}ms cap"
+                );
+            }
+
+            #[test]
+            fn backoff_delay_zero_base_always_zero(
+                attempt in 0u32..100,
+            ) {
+                let policy = LlmRetryPolicy::default().with_backoff_base_ms(0);
+                let delay = policy.backoff_delay(attempt);
+                prop_assert_eq!(delay, Duration::ZERO);
+            }
+        }
+    }
 }
