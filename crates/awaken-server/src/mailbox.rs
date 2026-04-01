@@ -1736,4 +1736,142 @@ mod tests {
             );
         }
     }
+
+    // ── Coverage gap tests ──────────────────────────────────────────
+
+    #[test]
+    fn run_request_extras_corrupt_json_returns_error() {
+        let corrupt = serde_json::json!({"overrides": "not-an-object", "decisions": 42});
+        let result = RunRequestExtras::from_value(&corrupt);
+        assert!(result.is_err(), "corrupt JSON should fail deserialization");
+    }
+
+    #[tokio::test]
+    async fn submit_inline_claim_fails_when_thread_already_claimed() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store.clone());
+
+        // First submit claims successfully.
+        let req1 =
+            RunRequest::new("thread-clash", vec![Message::user("first")]).with_agent_id("agent-1");
+        let result1 = mailbox.submit(req1).await;
+        assert!(result1.is_ok(), "first submit should succeed");
+
+        // Second submit to same thread: interrupt will cancel the first,
+        // but timing may allow the second to also succeed or fail gracefully.
+        let req2 =
+            RunRequest::new("thread-clash", vec![Message::user("second")]).with_agent_id("agent-1");
+        let result2 = mailbox.submit(req2).await;
+        // Either succeeds (interrupt cancelled old) or fails with validation error.
+        // Crucially: no panic, no double-claimed state.
+        match &result2 {
+            Ok((r, _)) => assert!(!r.job_id.is_empty()),
+            Err(MailboxError::Validation(_)) => {} // acceptable
+            Err(e) => panic!("unexpected error: {e}"),
+        }
+
+        // Store invariant: at most 1 Claimed job for this thread.
+        let claimed = store
+            .list_jobs("thread-clash", Some(&[MailboxJobStatus::Claimed]), 10, 0)
+            .await
+            .unwrap();
+        assert!(
+            claimed.len() <= 1,
+            "at most 1 Claimed, got {}",
+            claimed.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn reconnect_sink_returns_false_for_idle_worker() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store);
+
+        // Create a worker but don't start a run.
+        mailbox.get_or_create_worker("thread-idle").await;
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let result = mailbox.reconnect_sink("thread-idle", tx).await;
+        assert!(!result, "reconnect should fail for idle worker");
+    }
+
+    #[tokio::test]
+    async fn reconnect_sink_returns_false_for_unknown_thread() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store);
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let result = mailbox.reconnect_sink("nonexistent", tx).await;
+        assert!(!result, "reconnect should fail for unknown thread");
+    }
+
+    #[tokio::test]
+    async fn reconnect_sink_succeeds_for_running_worker() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store);
+
+        // Submit to get a running worker.
+        let req =
+            RunRequest::new("thread-reconnect", vec![Message::user("hi")]).with_agent_id("agent-1");
+        let _ = mailbox.submit(req).await;
+
+        // Give the spawn a moment to register.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let result = mailbox.reconnect_sink("thread-reconnect", tx).await;
+        assert!(result, "reconnect should succeed for running worker");
+    }
+
+    #[tokio::test]
+    async fn build_job_extras_roundtrip_with_decisions() {
+        use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
+
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store);
+
+        let decisions = vec![(
+            "call-1".to_string(),
+            ToolCallResume {
+                decision_id: "d-1".into(),
+                action: ResumeDecisionAction::Resume,
+                result: serde_json::json!({"approved": true}),
+                reason: None,
+                updated_at: 0,
+            },
+        )];
+
+        let request = RunRequest::new("thread-dec", vec![Message::user("hi")])
+            .with_agent_id("a1")
+            .with_decisions(decisions.clone());
+        let messages = request.messages.clone();
+        let job = mailbox.build_job(&request, "thread-dec", messages).unwrap();
+
+        // Verify extras contain decisions.
+        assert!(job.request_extras.is_some());
+        let extras = RunRequestExtras::from_value(job.request_extras.as_ref().unwrap()).unwrap();
+        assert_eq!(extras.decisions.len(), 1);
+        assert_eq!(extras.decisions[0].0, "call-1");
+    }
+
+    #[tokio::test]
+    async fn build_job_origin_a2a_roundtrip() {
+        let store = make_store();
+        let runtime = make_runtime();
+        let mailbox = make_mailbox(runtime, store);
+
+        let request = RunRequest::new("thread-a2a", vec![Message::user("hi")])
+            .with_origin(MailboxJobOrigin::A2A)
+            .with_parent_run_id("parent-123");
+        let messages = request.messages.clone();
+        let job = mailbox.build_job(&request, "thread-a2a", messages).unwrap();
+
+        assert!(matches!(job.origin, MailboxJobOrigin::A2A));
+        assert_eq!(job.parent_run_id.as_deref(), Some("parent-123"));
+    }
 }

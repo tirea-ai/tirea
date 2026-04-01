@@ -1072,4 +1072,71 @@ mod tests {
             .unwrap();
         assert_eq!(queued.len(), 2, "remaining 2 jobs must still be Queued");
     }
+
+    #[tokio::test]
+    async fn concurrent_claim_job_only_one_wins() {
+        let store = Arc::new(InMemoryMailboxStore::new());
+        let job1 = make_job("m-1", "agent-1");
+        let job2 = make_job("m-1", "agent-1");
+        let id1 = job1.job_id.clone();
+        let id2 = job2.job_id.clone();
+        store.enqueue(&job1).await.unwrap();
+        store.enqueue(&job2).await.unwrap();
+
+        // Try to claim both by ID concurrently.
+        let s1 = Arc::clone(&store);
+        let s2 = Arc::clone(&store);
+        let i1 = id1.clone();
+        let i2 = id2.clone();
+        let (r1, r2) = tokio::join!(
+            s1.claim_job(&i1, "c-1", 30_000, 1000),
+            s2.claim_job(&i2, "c-1", 30_000, 1000),
+        );
+
+        let claimed_count = [r1.unwrap(), r2.unwrap()]
+            .iter()
+            .filter(|r| r.is_some())
+            .count();
+        assert_eq!(
+            claimed_count, 1,
+            "only one claim_job should succeed for same mailbox"
+        );
+    }
+
+    #[tokio::test]
+    async fn claim_job_different_mailbox_both_succeed() {
+        let store = InMemoryMailboxStore::new();
+        let job1 = make_job("m-1", "agent-1");
+        let job2 = make_job("m-2", "agent-1");
+        let id1 = job1.job_id.clone();
+        let id2 = job2.job_id.clone();
+        store.enqueue(&job1).await.unwrap();
+        store.enqueue(&job2).await.unwrap();
+
+        let r1 = store.claim_job(&id1, "c-1", 30_000, 1000).await.unwrap();
+        let r2 = store.claim_job(&id2, "c-1", 30_000, 1000).await.unwrap();
+        assert!(r1.is_some(), "different mailbox should succeed");
+        assert!(r2.is_some(), "different mailbox should succeed");
+    }
+
+    #[tokio::test]
+    async fn claim_after_nack_works() {
+        let store = InMemoryMailboxStore::new();
+        let job = make_job("m-1", "agent-1");
+        let id = job.job_id.clone();
+        store.enqueue(&job).await.unwrap();
+
+        // Claim then nack.
+        let claimed = store
+            .claim_job(&id, "c-1", 30_000, 1000)
+            .await
+            .unwrap()
+            .unwrap();
+        let token = claimed.claim_token.unwrap();
+        store.nack(&id, &token, 1000, "retry", 2000).await.unwrap();
+
+        // Should be claimable again.
+        let reclaimed = store.claim("m-1", "c-1", 30_000, 2000, 1).await.unwrap();
+        assert_eq!(reclaimed.len(), 1);
+    }
 }
