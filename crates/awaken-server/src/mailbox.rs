@@ -1814,15 +1814,20 @@ mod tests {
         let runtime = make_runtime();
         let mailbox = make_mailbox(runtime, store);
 
-        // Submit to get a running worker.
-        let req =
-            RunRequest::new("thread-reconnect", vec![Message::user("hi")]).with_agent_id("agent-1");
-        let _ = mailbox.submit(req).await;
+        // Directly set the worker to Running status (avoids race with
+        // spawn_execution resetting to Idle when StubResolver fails).
+        let worker = mailbox.get_or_create_worker("thread-reconnect").await;
+        {
+            let reconnectable = Arc::new(ReconnectableEventSink::new(mpsc::unbounded_channel().0));
+            let mut w = worker.lock().await;
+            w.status = MailboxWorkerStatus::Running {
+                job_id: "job-fake".into(),
+                lease_handle: tokio::spawn(futures::future::pending::<()>()),
+                sink: reconnectable,
+            };
+        }
 
-        // Give the spawn a moment to register.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::unbounded_channel();
         let result = mailbox.reconnect_sink("thread-reconnect", tx).await;
         assert!(result, "reconnect should succeed for running worker");
     }

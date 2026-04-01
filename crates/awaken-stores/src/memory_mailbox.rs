@@ -424,6 +424,8 @@ impl MailboxStore for InMemoryMailboxStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
     use awaken_contract::contract::mailbox::MailboxJobOrigin;
 
     fn make_job(mailbox_id: &str, agent_id: &str) -> MailboxJob {
@@ -1075,20 +1077,22 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_claim_job_only_one_wins() {
-        let store = Arc::new(InMemoryMailboxStore::new());
+        let inner = InMemoryMailboxStore::new();
         let job1 = make_job("m-1", "agent-1");
         let job2 = make_job("m-1", "agent-1");
         let id1 = job1.job_id.clone();
         let id2 = job2.job_id.clone();
-        store.enqueue(&job1).await.unwrap();
-        store.enqueue(&job2).await.unwrap();
+        inner.enqueue(&job1).await.unwrap();
+        inner.enqueue(&job2).await.unwrap();
+
+        let store = Arc::new(inner);
 
         // Try to claim both by ID concurrently.
         let s1 = Arc::clone(&store);
         let s2 = Arc::clone(&store);
         let i1 = id1.clone();
         let i2 = id2.clone();
-        let (r1, r2) = tokio::join!(
+        let (r1, r2): (Result<Option<MailboxJob>, _>, Result<Option<MailboxJob>, _>) = tokio::join!(
             s1.claim_job(&i1, "c-1", 30_000, 1000),
             s2.claim_job(&i2, "c-1", 30_000, 1000),
         );
