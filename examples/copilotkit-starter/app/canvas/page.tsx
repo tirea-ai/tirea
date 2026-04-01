@@ -491,7 +491,7 @@ function CanvasV2Demo({ agentId }: { agentId: "default" | "permission" | "stoppe
 
   useDefaultRenderTool(
     {
-      render: ({ name, args, status, result }) => {
+      render: ({ name, args, status, result }: any) => {
         const mcpUi = getMcpUiContent(result);
         if (mcpUi) {
           return (
