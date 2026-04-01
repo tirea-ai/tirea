@@ -194,3 +194,165 @@ impl AgentRuntime {
         self.active_runs.unregister(run_id);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    use awaken_contract::contract::suspension::{ResumeDecisionAction, ToolCallResume};
+    use serde_json::Value;
+
+    struct StubResolver;
+    impl crate::registry::AgentResolver for StubResolver {
+        fn resolve(
+            &self,
+            agent_id: &str,
+        ) -> Result<crate::registry::ResolvedAgent, crate::error::RuntimeError> {
+            Err(crate::error::RuntimeError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })
+        }
+    }
+
+    fn make_runtime() -> AgentRuntime {
+        AgentRuntime::new(Arc::new(StubResolver))
+    }
+
+    fn make_resume() -> ToolCallResume {
+        ToolCallResume {
+            decision_id: "d1".into(),
+            action: ResumeDecisionAction::Resume,
+            result: Value::Null,
+            reason: None,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn new_creates_runtime() {
+        let rt = make_runtime();
+        assert!(rt.storage.is_none());
+        assert!(rt.profile_store.is_none());
+    }
+
+    #[test]
+    fn resolver_returns_ref() {
+        let rt = make_runtime();
+        // The stub resolver always returns AgentNotFound
+        let err = rt.resolver().resolve("any").unwrap_err();
+        assert!(
+            matches!(err, crate::error::RuntimeError::AgentNotFound { .. }),
+            "expected AgentNotFound, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn resolver_arc_returns_clone() {
+        let rt = make_runtime();
+        let arc = rt.resolver_arc();
+        let err = arc.resolve("x").unwrap_err();
+        assert!(matches!(
+            err,
+            crate::error::RuntimeError::AgentNotFound { .. }
+        ));
+    }
+
+    #[test]
+    fn with_thread_run_store_sets_store() {
+        let store = Arc::new(awaken_stores::InMemoryStore::new());
+        let rt = make_runtime().with_thread_run_store(store);
+        assert!(rt.thread_run_store().is_some());
+    }
+
+    #[test]
+    fn thread_run_store_none_by_default() {
+        let rt = make_runtime();
+        assert!(rt.thread_run_store().is_none());
+    }
+
+    #[test]
+    fn create_run_channels_returns_triple() {
+        let rt = make_runtime();
+        let (handle, token, _rx) = rt.create_run_channels("run-1".into());
+        assert_eq!(handle.run_id, "run-1");
+        assert!(!token.is_cancelled());
+    }
+
+    #[test]
+    fn register_run_succeeds() {
+        let rt = make_runtime();
+        let (handle, _token, _rx) = rt.create_run_channels("run-1".into());
+        assert!(rt.register_run("thread-1", handle).is_ok());
+    }
+
+    #[test]
+    fn register_run_fails_for_same_thread() {
+        let rt = make_runtime();
+        let (h1, _, _rx1) = rt.create_run_channels("run-1".into());
+        let (h2, _, _rx2) = rt.create_run_channels("run-2".into());
+        rt.register_run("thread-1", h1).unwrap();
+        let err = rt.register_run("thread-1", h2).unwrap_err();
+        assert!(
+            matches!(err, RuntimeError::ThreadAlreadyRunning { ref thread_id } if thread_id == "thread-1"),
+            "expected ThreadAlreadyRunning, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn unregister_run_allows_reregistration() {
+        let rt = make_runtime();
+        let (h1, _, _rx1) = rt.create_run_channels("run-1".into());
+        rt.register_run("thread-1", h1).unwrap();
+        rt.unregister_run("run-1");
+
+        let (h2, _, _rx2) = rt.create_run_channels("run-2".into());
+        assert!(rt.register_run("thread-1", h2).is_ok());
+    }
+
+    #[test]
+    fn run_handle_cancel() {
+        let rt = make_runtime();
+        let (handle, token, _rx) = rt.create_run_channels("run-1".into());
+        assert!(!token.is_cancelled());
+        handle.cancel();
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn run_handle_send_decisions() {
+        let rt = make_runtime();
+        let (handle, _token, mut rx) = rt.create_run_channels("run-1".into());
+        let decisions = vec![("call-1".into(), make_resume())];
+        handle.send_decisions(decisions).unwrap();
+
+        // Receive the batch from the channel
+        let batch = rx.try_recv().unwrap();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].0, "call-1");
+    }
+
+    #[test]
+    fn run_handle_send_decision_single() {
+        let rt = make_runtime();
+        let (handle, _token, mut rx) = rt.create_run_channels("run-1".into());
+        handle
+            .send_decision("call-2".into(), make_resume())
+            .unwrap();
+
+        let batch = rx.try_recv().unwrap();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].0, "call-2");
+    }
+
+    #[test]
+    fn run_handle_send_decisions_closed_channel() {
+        let rt = make_runtime();
+        let (handle, _token, rx) = rt.create_run_channels("run-1".into());
+        // Drop the receiver to close the channel
+        drop(rx);
+
+        let result = handle.send_decisions(vec![("call-1".into(), make_resume())]);
+        assert!(result.is_err(), "send should fail when receiver is dropped");
+    }
+}

@@ -1599,4 +1599,420 @@ mod tests {
         let text = tool_result_error_text(&result);
         assert!(text.contains("file://x"));
     }
+
+    // ── initialize_params additional tests ──
+
+    #[test]
+    fn initialize_params_client_info_has_name_and_version() {
+        let params = initialize_params(json!({}), Value::Null);
+        assert_eq!(params["clientInfo"]["name"], json!("awaken-mcp"));
+        let version = params["clientInfo"]["version"].as_str().unwrap();
+        assert!(!version.is_empty());
+    }
+
+    #[test]
+    fn initialize_params_nested_capabilities() {
+        let caps = json!({
+            "sampling": {},
+            "experimental": {"feature_x": true}
+        });
+        let params = initialize_params(caps.clone(), json!(null));
+        assert_eq!(params["capabilities"], caps);
+    }
+
+    #[test]
+    fn initialize_params_complex_config() {
+        let config = json!({
+            "key1": "val1",
+            "nested": {"a": [1, 2, 3]}
+        });
+        let params = initialize_params(json!({}), config.clone());
+        assert_eq!(params["config"], config);
+    }
+
+    // ── map_response_payload additional tests ──
+
+    #[test]
+    fn map_response_payload_success_null_result() {
+        let payload = JsonRpcPayload::Success {
+            result: Value::Null,
+        };
+        let result = map_response_payload(payload).unwrap();
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn map_response_payload_error_contains_code_and_message() {
+        let payload = JsonRpcPayload::Error {
+            error: mcp::JsonRpcError {
+                code: -32601,
+                message: "Method not found".to_string(),
+                data: Some(json!({"detail": "extra info"})),
+            },
+        };
+        let err = map_response_payload(payload).unwrap_err();
+        match err {
+            McpTransportError::ServerError(msg) => {
+                assert!(msg.contains("Method not found"));
+            }
+            other => panic!("expected ServerError, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn map_response_payload_success_array_result() {
+        let payload = JsonRpcPayload::Success {
+            result: json!([1, 2, 3]),
+        };
+        let result = map_response_payload(payload).unwrap();
+        assert_eq!(result, json!([1, 2, 3]));
+    }
+
+    // ── parse_json_rpc_message additional tests ──
+
+    #[test]
+    fn parse_json_rpc_message_request() {
+        let val = json!({
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "tools/call",
+            "params": {"name": "test"}
+        });
+        let msg = parse_json_rpc_message(val).unwrap();
+        assert!(matches!(msg, JsonRpcMessage::Request(_)));
+    }
+
+    #[test]
+    fn parse_json_rpc_message_error_response() {
+        let val = json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "error": {"code": -32600, "message": "Invalid"}
+        });
+        let msg = parse_json_rpc_message(val).unwrap();
+        match msg {
+            JsonRpcMessage::Response(resp) => {
+                assert!(matches!(resp.payload, JsonRpcPayload::Error { .. }));
+            }
+            other => panic!("expected Response, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_json_rpc_message_fallback_requires_jsonrpc_field() {
+        // Both primary and fallback paths require the jsonrpc field,
+        // so omitting it returns an error.
+        let val = json!({
+            "id": 1,
+            "result": {"ok": true}
+        });
+        assert!(parse_json_rpc_message(val).is_err());
+    }
+
+    // ── decode_http_response_payload additional tests ──
+
+    #[test]
+    fn decode_http_response_empty_batch_returns_missing_response() {
+        let body = json!([]);
+        let err = decode_http_response_payload(body, 1, None).unwrap_err();
+        assert!(matches!(err, McpTransportError::ProtocolError(_)));
+    }
+
+    #[test]
+    fn decode_http_response_batch_with_only_notifications() {
+        let body = json!([
+            {
+                "jsonrpc": "2.0",
+                "method": "notifications/progress",
+                "params": {"progressToken": 1, "progress": 1.0}
+            }
+        ]);
+        let err = decode_http_response_payload(body, 1, None).unwrap_err();
+        assert!(matches!(err, McpTransportError::ProtocolError(_)));
+    }
+
+    #[test]
+    fn decode_http_response_batch_request_messages_ignored() {
+        let body = json!([
+            {
+                "jsonrpc": "2.0",
+                "id": 100,
+                "method": "sampling/createMessage",
+                "params": {"messages": [], "maxTokens": 10}
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {"data": "found"}
+            }
+        ]);
+        let result = decode_http_response_payload(body, 1, None).unwrap();
+        assert_eq!(result["data"], json!("found"));
+    }
+
+    #[test]
+    fn decode_http_response_progress_not_emitted_without_registration() {
+        let body = json!([
+            {
+                "jsonrpc": "2.0",
+                "method": "notifications/progress",
+                "params": {"progressToken": 5, "progress": 1.0, "message": "step"}
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {"ok": true}
+            }
+        ]);
+        // No progress registration: progress notification is silently ignored
+        let result = decode_http_response_payload(body, 2, None).unwrap();
+        assert_eq!(result["ok"], json!(true));
+    }
+
+    #[test]
+    fn decode_http_response_progress_token_mismatch_not_emitted() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let body = json!([
+            {
+                "jsonrpc": "2.0",
+                "method": "notifications/progress",
+                "params": {"progressToken": 99, "progress": 1.0}
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {"ok": true}
+            }
+        ]);
+        let result =
+            decode_http_response_payload(body, 1, Some((ProgressTokenKey::Number(1), tx))).unwrap();
+        assert_eq!(result["ok"], json!(true));
+        assert!(
+            rx.try_recv().is_err(),
+            "mismatched token must not emit progress"
+        );
+    }
+
+    #[test]
+    fn decode_http_response_single_notification_no_response() {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/progress",
+            "params": {"progressToken": 1, "progress": 0.5}
+        });
+        let err = decode_http_response_payload(body, 1, None).unwrap_err();
+        assert!(matches!(err, McpTransportError::ProtocolError(_)));
+    }
+
+    #[test]
+    fn decode_http_response_invalid_item_in_batch_returns_error() {
+        let body = json!([
+            {"not_jsonrpc": true}
+        ]);
+        let result = decode_http_response_payload(body, 1, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decode_http_response_single_invalid_returns_error() {
+        let body = json!({"random": "data"});
+        let result = decode_http_response_payload(body, 1, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decode_http_response_progress_with_string_token() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let body = json!([
+            {
+                "jsonrpc": "2.0",
+                "method": "notifications/progress",
+                "params": {"progressToken": "tok-abc", "progress": 2.0, "total": 5.0}
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "result": {"done": true}
+            }
+        ]);
+        let result = decode_http_response_payload(
+            body,
+            4,
+            Some((ProgressTokenKey::String("tok-abc".to_string()), tx)),
+        )
+        .unwrap();
+        assert_eq!(result["done"], json!(true));
+        let update = rx.try_recv().expect("should receive progress");
+        assert!((update.progress - 2.0).abs() < f64::EPSILON);
+        assert_eq!(update.total, Some(5.0));
+    }
+
+    // ── decode_progress_notification additional tests ──
+
+    #[test]
+    fn decode_progress_notification_malformed_params() {
+        let notification = JsonRpcNotification::new(
+            "notifications/progress",
+            Some(json!({"progressToken": {"bad": true}, "progress": "not_a_number"})),
+        );
+        // Malformed params should fail serde and return None
+        assert!(decode_progress_notification(notification).is_none());
+    }
+
+    // ── tool_result_error_text additional tests ──
+
+    #[test]
+    fn tool_result_error_text_multiple_text_items_joined() {
+        let result = CallToolResult {
+            content: vec![ToolContent::text("line1"), ToolContent::text("line2")],
+            structured_content: None,
+            is_error: Some(true),
+        };
+        assert_eq!(tool_result_error_text(&result), "line1\nline2");
+    }
+
+    #[test]
+    fn tool_result_error_text_structured_takes_precedence_over_empty_text() {
+        // When content has no text items but structured_content exists
+        let result = CallToolResult {
+            content: vec![ToolContent::Resource {
+                uri: "file://r".to_string(),
+                mime_type: None,
+            }],
+            structured_content: Some(json!({"err": "details"})),
+            is_error: Some(true),
+        };
+        // Text filter_map yields nothing since Resource has no as_text(),
+        // so text is empty -> falls through to structured
+        let text = tool_result_error_text(&result);
+        assert!(text.contains("details"));
+    }
+
+    // ── call_result_to_tool_data additional tests ──
+
+    #[test]
+    fn call_result_to_data_non_text_content_serialized() {
+        let result = CallToolResult {
+            content: vec![ToolContent::Resource {
+                uri: "file://test".to_string(),
+                mime_type: Some("application/json".to_string()),
+            }],
+            structured_content: None,
+            is_error: None,
+        };
+        // plain_text_content returns None -> falls to serde serialization
+        let data = call_result_to_tool_data(&result);
+        assert!(data["content"][0]["uri"].as_str().is_some());
+    }
+
+    #[test]
+    fn call_result_to_data_text_with_annotations_serialized() {
+        let result = CallToolResult {
+            content: vec![ToolContent::Text {
+                text: "annotated".to_string(),
+                annotations: Some(mcp::Annotations {
+                    audience: None,
+                    priority: Some(0.5),
+                    last_modified: None,
+                }),
+                meta: None,
+            }],
+            structured_content: None,
+            is_error: None,
+        };
+        // plain_text_content returns None for annotated items -> serialized as JSON
+        let data = call_result_to_tool_data(&result);
+        assert!(data.is_object());
+        assert_eq!(data["content"][0]["text"], json!("annotated"));
+    }
+
+    // ── plain_text_content additional tests ──
+
+    #[test]
+    fn plain_text_content_with_both_annotations_and_meta_returns_none() {
+        let content = vec![ToolContent::Text {
+            text: "both".to_string(),
+            annotations: Some(mcp::Annotations {
+                audience: None,
+                priority: Some(1.0),
+                last_modified: None,
+            }),
+            meta: Some(json!({"k": "v"})),
+        }];
+        assert!(plain_text_content(&content).is_none());
+    }
+
+    #[test]
+    fn plain_text_content_mixed_plain_and_annotated_returns_none() {
+        let content = vec![
+            ToolContent::text("plain"),
+            ToolContent::Text {
+                text: "annotated".to_string(),
+                annotations: Some(mcp::Annotations {
+                    audience: None,
+                    priority: Some(0.1),
+                    last_modified: None,
+                }),
+                meta: None,
+            },
+        ];
+        assert!(plain_text_content(&content).is_none());
+    }
+
+    // ── handle_server_request additional tests ──
+
+    #[tokio::test]
+    async fn handle_sampling_request_with_no_params() {
+        let handler = MockSamplingHandler {
+            response_text: "unused".to_string(),
+        };
+        let request = JsonRpcRequest::new(
+            JsonRpcId::Number(10),
+            "sampling/createMessage".to_string(),
+            None,
+        );
+        let response = handle_server_request(Some(&handler), &request).await;
+        match response.payload {
+            mcp::JsonRpcPayload::Error { error } => {
+                assert!(error.to_string().contains("Invalid sampling/createMessage"));
+            }
+            _ => panic!("expected error for missing params"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_unknown_method_with_handler_still_returns_not_found() {
+        let handler = MockSamplingHandler {
+            response_text: "unused".to_string(),
+        };
+        let request = JsonRpcRequest::new(
+            JsonRpcId::Number(20),
+            "tools/call".to_string(),
+            Some(json!({})),
+        );
+        let response = handle_server_request(Some(&handler), &request).await;
+        match response.payload {
+            mcp::JsonRpcPayload::Error { error } => {
+                assert!(error.to_string().contains("Method not supported"));
+                assert!(error.to_string().contains("tools/call"));
+            }
+            _ => panic!("expected error response"),
+        }
+    }
+
+    // ── ProgressTokenKey hash consistency ──
+
+    #[test]
+    fn progress_token_key_works_as_hashmap_key() {
+        let mut map = HashMap::new();
+        map.insert(ProgressTokenKey::String("a".to_string()), 1);
+        map.insert(ProgressTokenKey::Number(42), 2);
+        assert_eq!(
+            map.get(&ProgressTokenKey::String("a".to_string())),
+            Some(&1)
+        );
+        assert_eq!(map.get(&ProgressTokenKey::Number(42)), Some(&2));
+        assert_eq!(map.get(&ProgressTokenKey::String("b".to_string())), None);
+        assert_eq!(map.get(&ProgressTokenKey::Number(0)), None);
+    }
 }

@@ -860,4 +860,332 @@ mod tests {
         assert_eq!(payload.tool_call_id, "c1");
         assert_eq!(payload.action, "resume");
     }
+
+    // ── CreateRunPayload deserialization ──
+
+    #[test]
+    fn create_run_payload_camel_case() {
+        let json =
+            r#"{"agentId":"a1","threadId":"t1","messages":[{"role":"user","content":"hi"}]}"#;
+        let p: CreateRunPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(p.agent_id, "a1");
+        assert_eq!(p.thread_id.as_deref(), Some("t1"));
+        assert_eq!(p.messages.len(), 1);
+        assert_eq!(p.messages[0].role, "user");
+        assert_eq!(p.messages[0].content, "hi");
+    }
+
+    #[test]
+    fn create_run_payload_snake_case_alias() {
+        let json = r#"{"agent_id":"a2","thread_id":"t2","messages":[]}"#;
+        let p: CreateRunPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(p.agent_id, "a2");
+        assert_eq!(p.thread_id.as_deref(), Some("t2"));
+        assert!(p.messages.is_empty());
+    }
+
+    #[test]
+    fn create_run_payload_defaults() {
+        let json = r#"{"agentId":"a3"}"#;
+        let p: CreateRunPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(p.agent_id, "a3");
+        assert_eq!(p.thread_id, None);
+        assert!(p.messages.is_empty());
+    }
+
+    #[test]
+    fn create_run_payload_missing_agent_id_fails() {
+        let json = r#"{"messages":[]}"#;
+        let result = serde_json::from_str::<CreateRunPayload>(json);
+        assert!(result.is_err());
+    }
+
+    // ── PushRunInputsPayload deserialization ──
+
+    #[test]
+    fn push_run_inputs_payload_empty_default() {
+        let json = r#"{}"#;
+        let p: PushRunInputsPayload = serde_json::from_str(json).unwrap();
+        assert!(p.messages.is_empty());
+    }
+
+    #[test]
+    fn push_run_inputs_payload_with_messages() {
+        let json =
+            r#"{"messages":[{"role":"user","content":"msg1"},{"role":"user","content":"msg2"}]}"#;
+        let p: PushRunInputsPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(p.messages.len(), 2);
+        assert_eq!(p.messages[0].content, "msg1");
+        assert_eq!(p.messages[1].content, "msg2");
+    }
+
+    // ── ListRunsParams deserialization ──
+
+    #[test]
+    fn list_runs_params_defaults() {
+        let p: ListRunsParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(p.offset, None);
+        assert_eq!(p.limit, 50);
+        assert_eq!(p.status, None);
+    }
+
+    #[test]
+    fn list_runs_params_with_status_filter() {
+        let json = r#"{"offset":10,"limit":25,"status":"running"}"#;
+        let p: ListRunsParams = serde_json::from_str(json).unwrap();
+        assert_eq!(p.offset, Some(10));
+        assert_eq!(p.limit, 25);
+        assert_eq!(p.status.as_deref(), Some("running"));
+    }
+
+    // ── PatchThreadPayload deserialization ──
+
+    #[test]
+    fn patch_thread_payload_title_only() {
+        let json = r#"{"title":"new title"}"#;
+        let p: PatchThreadPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(p.title.as_deref(), Some("new title"));
+        assert!(p.custom.is_none());
+    }
+
+    #[test]
+    fn patch_thread_payload_custom_only() {
+        let json = r#"{"custom":{"key":"value"}}"#;
+        let p: PatchThreadPayload = serde_json::from_str(json).unwrap();
+        assert!(p.title.is_none());
+        let custom = p.custom.unwrap();
+        assert_eq!(custom.get("key").unwrap(), "value");
+    }
+
+    #[test]
+    fn patch_thread_payload_both() {
+        let json = r#"{"title":"t","custom":{"k":"v"}}"#;
+        let p: PatchThreadPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(p.title.as_deref(), Some("t"));
+        assert!(p.custom.is_some());
+    }
+
+    #[test]
+    fn patch_thread_payload_empty() {
+        let json = r#"{}"#;
+        let p: PatchThreadPayload = serde_json::from_str(json).unwrap();
+        assert!(p.title.is_none());
+        assert!(p.custom.is_none());
+    }
+
+    // ── DecisionPayload additional tests ──
+
+    #[test]
+    fn decision_payload_snake_case_alias() {
+        let json = r#"{"tool_call_id":"c2","action":"cancel"}"#;
+        let p: DecisionPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(p.tool_call_id, "c2");
+        assert_eq!(p.action, "cancel");
+        assert_eq!(p.payload, Value::Null);
+    }
+
+    #[test]
+    fn decision_payload_missing_required_fails() {
+        // missing action
+        let json = r#"{"toolCallId":"c1"}"#;
+        assert!(serde_json::from_str::<DecisionPayload>(json).is_err());
+
+        // missing tool_call_id
+        let json = r#"{"action":"resume"}"#;
+        assert!(serde_json::from_str::<DecisionPayload>(json).is_err());
+    }
+
+    // ── convert_run_messages edge cases ──
+
+    #[test]
+    fn convert_run_messages_empty() {
+        let converted = convert_run_messages(vec![]);
+        assert!(converted.is_empty());
+    }
+
+    #[test]
+    fn convert_run_messages_system_role() {
+        let msgs = vec![RunMessage {
+            role: "system".into(),
+            content: "you are helpful".into(),
+        }];
+        let converted = convert_run_messages(msgs);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].text(), "you are helpful");
+    }
+
+    #[test]
+    fn convert_run_messages_assistant_role() {
+        let msgs = vec![RunMessage {
+            role: "assistant".into(),
+            content: "sure".into(),
+        }];
+        let converted = convert_run_messages(msgs);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].text(), "sure");
+    }
+
+    #[test]
+    fn convert_run_messages_mixed_known_unknown() {
+        let msgs = vec![
+            RunMessage {
+                role: "user".into(),
+                content: "a".into(),
+            },
+            RunMessage {
+                role: "assistant".into(),
+                content: "b".into(),
+            },
+            RunMessage {
+                role: "system".into(),
+                content: "c".into(),
+            },
+            RunMessage {
+                role: "function".into(),
+                content: "d".into(),
+            },
+            RunMessage {
+                role: "tool".into(),
+                content: "e".into(),
+            },
+        ];
+        let converted = convert_run_messages(msgs);
+        assert_eq!(converted.len(), 3);
+        assert_eq!(converted[0].text(), "a");
+        assert_eq!(converted[1].text(), "b");
+        assert_eq!(converted[2].text(), "c");
+    }
+
+    // ── ApiError response body validation ──
+
+    #[tokio::test]
+    async fn api_error_thread_not_found_body() {
+        let err = ApiError::ThreadNotFound("t-abc".into());
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"], "thread not found: t-abc");
+    }
+
+    #[tokio::test]
+    async fn api_error_run_not_found_body() {
+        let err = ApiError::RunNotFound("r-xyz".into());
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"], "run not found: r-xyz");
+    }
+
+    #[tokio::test]
+    async fn api_error_internal_body() {
+        let err = ApiError::Internal("db crashed".into());
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"], "db crashed");
+    }
+
+    #[tokio::test]
+    async fn api_error_bad_request_body() {
+        let err = ApiError::BadRequest("invalid input".into());
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"], "invalid input");
+    }
+
+    // ── CreateThreadPayload deserialization ──
+
+    #[test]
+    fn create_thread_payload_with_title() {
+        let json = r#"{"title":"my thread"}"#;
+        let p: CreateThreadPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(p.title.as_deref(), Some("my thread"));
+    }
+
+    #[test]
+    fn create_thread_payload_empty() {
+        let json = r#"{}"#;
+        let p: CreateThreadPayload = serde_json::from_str(json).unwrap();
+        assert!(p.title.is_none());
+    }
+
+    // ── MailboxPayload deserialization ──
+
+    #[test]
+    fn mailbox_payload_default() {
+        let json = r#"{}"#;
+        let p: MailboxPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(p.payload, Value::Null);
+    }
+
+    #[test]
+    fn mailbox_payload_with_content() {
+        let json = r#"{"payload":{"text":"hello"}}"#;
+        let p: MailboxPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(p.payload["text"], "hello");
+    }
+
+    // ── PostThreadMessagesPayload deserialization ──
+
+    #[test]
+    fn post_thread_messages_payload_camel_case() {
+        let json = r#"{"agentId":"agent-1","messages":[{"role":"user","content":"test"}]}"#;
+        let p: PostThreadMessagesPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(p.agent_id.as_deref(), Some("agent-1"));
+        assert_eq!(p.messages.len(), 1);
+    }
+
+    #[test]
+    fn post_thread_messages_payload_snake_case_alias() {
+        let json = r#"{"agent_id":"agent-2","messages":[]}"#;
+        let p: PostThreadMessagesPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(p.agent_id.as_deref(), Some("agent-2"));
+    }
+
+    #[test]
+    fn post_thread_messages_payload_defaults() {
+        let json = r#"{}"#;
+        let p: PostThreadMessagesPayload = serde_json::from_str(json).unwrap();
+        assert!(p.agent_id.is_none());
+        assert!(p.messages.is_empty());
+    }
+
+    // ── RunMessage deserialization ──
+
+    #[test]
+    fn run_message_deserialize() {
+        let json = r#"{"role":"user","content":"hello world"}"#;
+        let m: RunMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(m.role, "user");
+        assert_eq!(m.content, "hello world");
+    }
+
+    #[test]
+    fn run_message_missing_field_fails() {
+        let json = r#"{"role":"user"}"#;
+        assert!(serde_json::from_str::<RunMessage>(json).is_err());
+    }
+
+    // ── ListParams with explicit values ──
+
+    #[test]
+    fn list_params_explicit_values() {
+        let json = r#"{"offset":5,"limit":100}"#;
+        let p: ListParams = serde_json::from_str(json).unwrap();
+        assert_eq!(p.offset, Some(5));
+        assert_eq!(p.limit, 100);
+    }
 }

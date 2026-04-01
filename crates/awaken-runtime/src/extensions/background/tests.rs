@@ -1006,3 +1006,41 @@ fn task_summary_with_parent_context_includes_field_in_json() {
     assert!(json.contains("parent_context"));
     assert!(json.contains("run-1"));
 }
+
+#[test]
+fn plugin_descriptor_returns_correct_name() {
+    let manager = Arc::new(BackgroundTaskManager::new());
+    let plugin = BackgroundTaskPlugin::new(manager);
+    let desc = plugin.descriptor();
+    assert_eq!(desc.name, "background_tasks");
+}
+
+#[test]
+fn plugin_on_activate_is_noop() {
+    let manager = Arc::new(BackgroundTaskManager::new());
+    let plugin = BackgroundTaskPlugin::new(manager);
+    let spec = awaken_contract::registry_spec::AgentSpec::default();
+    let mut patch = crate::state::MutationBatch::new();
+    let result = plugin.on_activate(&spec, &mut patch);
+    assert!(result.is_ok());
+    assert!(patch.is_empty());
+}
+
+#[test]
+fn plugin_registers_phase_hooks() {
+    let store = StateStore::new();
+    let manager = Arc::new(BackgroundTaskManager::new());
+    let plugin: Arc<dyn Plugin> = Arc::new(BackgroundTaskPlugin::new(manager));
+    let env = ExecutionEnv::from_plugins(&[plugin], &Default::default()).unwrap();
+    store.register_keys(&env.key_registrations).unwrap();
+    // Phase hooks for RunStart and RunEnd are registered
+    assert!(!env.phase_hooks.is_empty());
+    assert!(
+        env.phase_hooks.contains_key(&Phase::RunStart),
+        "RunStart hook must be registered"
+    );
+    assert!(
+        env.phase_hooks.contains_key(&Phase::RunEnd),
+        "RunEnd hook must be registered"
+    );
+}

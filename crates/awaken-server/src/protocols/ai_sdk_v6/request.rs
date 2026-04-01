@@ -657,4 +657,357 @@ mod tests {
         assert!(parse_data_uri("https://example.com/img.png").is_none());
         assert!(parse_data_uri("data:image/png,raw-data").is_none());
     }
+
+    // ── parse_data_uri (extended) ──
+
+    #[test]
+    fn parse_data_uri_missing_data_prefix() {
+        assert!(parse_data_uri("image/png;base64,abc123").is_none());
+    }
+
+    #[test]
+    fn parse_data_uri_missing_base64_marker() {
+        // Has "data:" prefix and comma, but no ";base64" suffix on meta
+        assert!(parse_data_uri("data:image/png,abc123").is_none());
+    }
+
+    #[test]
+    fn parse_data_uri_missing_comma() {
+        assert!(parse_data_uri("data:image/png;base64abc123").is_none());
+    }
+
+    #[test]
+    fn parse_data_uri_empty_data() {
+        let (mime, data) = parse_data_uri("data:image/png;base64,").unwrap();
+        assert_eq!(mime, "image/png");
+        assert_eq!(data, "");
+    }
+
+    // ── part_kind (extended) ──
+
+    #[test]
+    fn part_kind_returns_type_string() {
+        let part = json!({"type": "text", "text": "hello"});
+        assert_eq!(part_kind(&part), Some("text"));
+    }
+
+    #[test]
+    fn part_kind_returns_none_without_type() {
+        let part = json!({"text": "hello"});
+        assert_eq!(part_kind(&part), None);
+    }
+
+    #[test]
+    fn part_kind_returns_none_when_type_not_string() {
+        let part = json!({"type": 42});
+        assert_eq!(part_kind(&part), None);
+    }
+
+    // ── part_to_content_block (extended) ──
+
+    #[test]
+    fn part_to_content_block_text() {
+        let part = json!({"type": "text", "text": "hello"});
+        let block = part_to_content_block(&part).unwrap();
+        assert_eq!(block, ContentBlock::text("hello"));
+    }
+
+    #[test]
+    fn part_to_content_block_file_data_uri_image() {
+        let part = json!({
+            "type": "file",
+            "url": "data:image/png;base64,abc123",
+            "mediaType": "image/png"
+        });
+        let block = part_to_content_block(&part).unwrap();
+        assert_eq!(block, ContentBlock::image_base64("image/png", "abc123"));
+    }
+
+    #[test]
+    fn part_to_content_block_file_url_image() {
+        let part = json!({
+            "type": "file",
+            "url": "https://example.com/photo.jpg",
+            "mediaType": "image/jpeg"
+        });
+        let block = part_to_content_block(&part).unwrap();
+        assert_eq!(
+            block,
+            ContentBlock::image_url("https://example.com/photo.jpg")
+        );
+    }
+
+    #[test]
+    fn part_to_content_block_file_url_audio() {
+        let part = json!({
+            "type": "file",
+            "url": "https://example.com/song.mp3",
+            "mediaType": "audio/mpeg"
+        });
+        let block = part_to_content_block(&part).unwrap();
+        assert_eq!(
+            block,
+            ContentBlock::audio_url("https://example.com/song.mp3")
+        );
+    }
+
+    #[test]
+    fn part_to_content_block_file_url_video() {
+        let part = json!({
+            "type": "file",
+            "url": "https://example.com/clip.mp4",
+            "mediaType": "video/mp4"
+        });
+        let block = part_to_content_block(&part).unwrap();
+        assert_eq!(
+            block,
+            ContentBlock::video_url("https://example.com/clip.mp4")
+        );
+    }
+
+    #[test]
+    fn part_to_content_block_file_url_document() {
+        let part = json!({
+            "type": "file",
+            "url": "https://example.com/doc.pdf",
+            "mediaType": "application/pdf"
+        });
+        let block = part_to_content_block(&part).unwrap();
+        assert_eq!(
+            block,
+            ContentBlock::document_url("https://example.com/doc.pdf", None)
+        );
+    }
+
+    #[test]
+    fn part_to_content_block_unknown_type_returns_none() {
+        let part = json!({"type": "source-url", "sourceId": "s1", "url": "https://example.com"});
+        assert!(part_to_content_block(&part).is_none());
+    }
+
+    // ── dedup_messages (extended) ──
+
+    #[test]
+    fn dedup_messages_empty_known_ids_returns_all() {
+        let known_ids: HashSet<String> = HashSet::new();
+        let msgs = vec![
+            UIMessage {
+                id: Some("m1".into()),
+                role: "user".into(),
+                parts: vec![raw_part(json!({"type": "text", "text": "a"}))],
+            },
+            UIMessage {
+                id: Some("m2".into()),
+                role: "user".into(),
+                parts: vec![raw_part(json!({"type": "text", "text": "b"}))],
+            },
+        ];
+        let result = dedup_messages(msgs, &known_ids);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn dedup_messages_filters_all_known() {
+        let known_ids: HashSet<String> = ["m1", "m2"].iter().map(|s| s.to_string()).collect();
+        let msgs = vec![
+            UIMessage {
+                id: Some("m1".into()),
+                role: "user".into(),
+                parts: vec![raw_part(json!({"type": "text", "text": "a"}))],
+            },
+            UIMessage {
+                id: Some("m2".into()),
+                role: "user".into(),
+                parts: vec![raw_part(json!({"type": "text", "text": "b"}))],
+            },
+        ];
+        let result = dedup_messages(msgs, &known_ids);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn dedup_messages_keeps_no_id_messages() {
+        let known_ids: HashSet<String> = ["m1"].iter().map(|s| s.to_string()).collect();
+        let msgs = vec![
+            UIMessage {
+                id: None,
+                role: "user".into(),
+                parts: vec![raw_part(json!({"type": "text", "text": "no id 1"}))],
+            },
+            UIMessage {
+                id: None,
+                role: "user".into(),
+                parts: vec![raw_part(json!({"type": "text", "text": "no id 2"}))],
+            },
+        ];
+        let result = dedup_messages(msgs, &known_ids);
+        assert_eq!(result.len(), 2);
+    }
+
+    // ── extract_tool_call_decisions (extended) ──
+
+    #[test]
+    fn extract_decisions_output_available_is_resume() {
+        let msgs = vec![UIMessage {
+            id: Some("a1".into()),
+            role: "assistant".into(),
+            parts: vec![raw_part(json!({
+                "type": "tool-run",
+                "toolCallId": "tc1",
+                "state": "output-available",
+                "output": "result data"
+            }))],
+        }];
+        let decisions = extract_tool_call_decisions(&msgs);
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].0, "tc1");
+        assert_eq!(decisions[0].1.action, ResumeDecisionAction::Resume);
+        assert_eq!(decisions[0].1.result, json!("result data"));
+    }
+
+    #[test]
+    fn extract_decisions_output_denied_is_cancel() {
+        let msgs = vec![UIMessage {
+            id: Some("a1".into()),
+            role: "assistant".into(),
+            parts: vec![raw_part(json!({
+                "type": "tool-confirm",
+                "toolCallId": "tc2",
+                "state": "output-denied"
+            }))],
+        }];
+        let decisions = extract_tool_call_decisions(&msgs);
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].0, "tc2");
+        assert_eq!(decisions[0].1.action, ResumeDecisionAction::Cancel);
+        assert_eq!(decisions[0].1.result, json!({"approved": false}));
+    }
+
+    #[test]
+    fn extract_decisions_ignores_non_tool_parts() {
+        let msgs = vec![UIMessage {
+            id: Some("a1".into()),
+            role: "assistant".into(),
+            parts: vec![
+                raw_part(json!({"type": "text", "text": "hello"})),
+                raw_part(json!({"type": "step-start"})),
+            ],
+        }];
+        let decisions = extract_tool_call_decisions(&msgs);
+        assert!(decisions.is_empty());
+    }
+
+    #[test]
+    fn extract_decisions_ignores_user_messages() {
+        let msgs = vec![UIMessage {
+            id: Some("u1".into()),
+            role: "user".into(),
+            parts: vec![raw_part(json!({
+                "type": "tool-run",
+                "toolCallId": "tc1",
+                "state": "output-available",
+                "output": "data"
+            }))],
+        }];
+        let decisions = extract_tool_call_decisions(&msgs);
+        assert!(decisions.is_empty());
+    }
+
+    #[test]
+    fn extract_decisions_requires_state_field() {
+        let msgs = vec![UIMessage {
+            id: Some("a1".into()),
+            role: "assistant".into(),
+            parts: vec![raw_part(json!({
+                "type": "tool-run",
+                "toolCallId": "tc1"
+            }))],
+        }];
+        let decisions = extract_tool_call_decisions(&msgs);
+        assert!(decisions.is_empty());
+    }
+
+    #[test]
+    fn extract_decisions_requires_tool_call_id() {
+        let msgs = vec![UIMessage {
+            id: Some("a1".into()),
+            role: "assistant".into(),
+            parts: vec![raw_part(json!({
+                "type": "tool-run",
+                "state": "output-available",
+                "output": "data"
+            }))],
+        }];
+        let decisions = extract_tool_call_decisions(&msgs);
+        assert!(decisions.is_empty());
+    }
+
+    #[test]
+    fn extract_decisions_output_error_is_resume() {
+        let msgs = vec![UIMessage {
+            id: Some("a1".into()),
+            role: "assistant".into(),
+            parts: vec![raw_part(json!({
+                "type": "tool-exec",
+                "toolCallId": "tc3",
+                "state": "output-error",
+                "errorText": "something failed"
+            }))],
+        }];
+        let decisions = extract_tool_call_decisions(&msgs);
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].1.action, ResumeDecisionAction::Resume);
+        assert_eq!(decisions[0].1.result, json!({"error": "something failed"}));
+    }
+
+    #[test]
+    fn extract_decisions_approval_responded_approved_true() {
+        let msgs = vec![UIMessage {
+            id: Some("a1".into()),
+            role: "assistant".into(),
+            parts: vec![raw_part(json!({
+                "type": "tool-approval",
+                "toolCallId": "tc4",
+                "state": "approval-responded",
+                "approval": {"approved": true}
+            }))],
+        }];
+        let decisions = extract_tool_call_decisions(&msgs);
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].1.action, ResumeDecisionAction::Resume);
+        assert_eq!(decisions[0].1.result, json!({"approved": true}));
+    }
+
+    #[test]
+    fn extract_decisions_approval_responded_approved_false() {
+        let msgs = vec![UIMessage {
+            id: Some("a1".into()),
+            role: "assistant".into(),
+            parts: vec![raw_part(json!({
+                "type": "tool-approval",
+                "toolCallId": "tc5",
+                "state": "approval-responded",
+                "approval": {"approved": false}
+            }))],
+        }];
+        let decisions = extract_tool_call_decisions(&msgs);
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].1.action, ResumeDecisionAction::Cancel);
+        assert_eq!(decisions[0].1.result, json!({"approved": false}));
+    }
+
+    #[test]
+    fn extract_decisions_unknown_state_ignored() {
+        let msgs = vec![UIMessage {
+            id: Some("a1".into()),
+            role: "assistant".into(),
+            parts: vec![raw_part(json!({
+                "type": "tool-run",
+                "toolCallId": "tc6",
+                "state": "pending"
+            }))],
+        }];
+        let decisions = extract_tool_call_decisions(&msgs);
+        assert!(decisions.is_empty());
+    }
 }

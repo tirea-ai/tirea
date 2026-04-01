@@ -587,4 +587,168 @@ mod tests {
         let text = extract_text_from_value(&value);
         assert_eq!(text.as_deref(), Some("nested"));
     }
+
+    #[test]
+    fn extract_output_text_no_data() {
+        let response = A2aTaskResponse {
+            status: "completed".into(),
+            termination_code: None,
+            termination_detail: None,
+            message: None,
+            history: vec![],
+            artifacts: vec![],
+        };
+        assert!(extract_output_text(&response).is_none());
+    }
+
+    #[test]
+    fn extract_output_text_empty_artifacts_only() {
+        let response = A2aTaskResponse {
+            status: "completed".into(),
+            termination_code: None,
+            termination_detail: None,
+            message: None,
+            history: vec![],
+            artifacts: vec![json!({"text": ""}), json!({"text": "   "})],
+        };
+        assert!(extract_output_text(&response).is_none());
+    }
+
+    #[test]
+    fn extract_text_from_value_plain_string() {
+        let value = json!("hello world");
+        assert_eq!(
+            extract_text_from_value(&value).as_deref(),
+            Some("hello world")
+        );
+    }
+
+    #[test]
+    fn extract_text_from_value_whitespace_only() {
+        let value = json!("   \t\n  ");
+        assert!(extract_text_from_value(&value).is_none());
+    }
+
+    #[test]
+    fn extract_text_from_value_empty_string() {
+        let value = json!("");
+        assert!(extract_text_from_value(&value).is_none());
+    }
+
+    #[test]
+    fn extract_text_from_value_number() {
+        let value = json!(42);
+        assert!(extract_text_from_value(&value).is_none());
+    }
+
+    #[test]
+    fn extract_text_from_value_null() {
+        let value = json!(null);
+        assert!(extract_text_from_value(&value).is_none());
+    }
+
+    #[test]
+    fn extract_text_from_value_bool() {
+        let value = json!(true);
+        assert!(extract_text_from_value(&value).is_none());
+    }
+
+    #[test]
+    fn extract_text_from_value_empty_array() {
+        let value = json!([]);
+        assert!(extract_text_from_value(&value).is_none());
+    }
+
+    #[test]
+    fn extract_text_from_value_array_of_strings() {
+        let value = json!(["first", "second", "third"]);
+        assert_eq!(
+            extract_text_from_value(&value).as_deref(),
+            Some("first\n\nsecond\n\nthird")
+        );
+    }
+
+    #[test]
+    fn extract_text_from_value_object_with_agent_role() {
+        let value = json!({"role": "agent", "text": "agent reply"});
+        assert_eq!(
+            extract_text_from_value(&value).as_deref(),
+            Some("agent reply")
+        );
+    }
+
+    #[test]
+    fn extract_text_from_value_object_empty_text() {
+        let value = json!({"text": ""});
+        assert!(extract_text_from_value(&value).is_none());
+    }
+
+    #[test]
+    fn map_task_status_input_required() {
+        // "input-required" is not a terminal state, so it maps to Running
+        for status_str in &["input-required", "input_required"] {
+            let response = A2aTaskResponse {
+                status: (*status_str).into(),
+                termination_code: None,
+                termination_detail: None,
+                message: None,
+                history: vec![],
+                artifacts: vec![],
+            };
+            let snapshot = map_task_status(&response);
+            assert_eq!(snapshot.status, RemoteTaskStatus::Running);
+            assert!(!snapshot.done);
+        }
+    }
+
+    #[test]
+    fn map_task_status_case_insensitive() {
+        let response = A2aTaskResponse {
+            status: "COMPLETED".into(),
+            termination_code: None,
+            termination_detail: None,
+            message: None,
+            history: vec![],
+            artifacts: vec![],
+        };
+        let snapshot = map_task_status(&response);
+        assert_eq!(snapshot.status, RemoteTaskStatus::Completed);
+        assert!(snapshot.done);
+    }
+
+    #[test]
+    fn map_task_status_cancel_requested_termination() {
+        let response = A2aTaskResponse {
+            status: "done".into(),
+            termination_code: Some("cancel_requested".into()),
+            termination_detail: Some("cancellation requested".into()),
+            message: None,
+            history: vec![],
+            artifacts: vec![],
+        };
+        let snapshot = map_task_status(&response);
+        assert_eq!(snapshot.status, RemoteTaskStatus::Stopped);
+        assert!(snapshot.done);
+        assert_eq!(snapshot.error.as_deref(), Some("cancellation requested"));
+    }
+
+    #[test]
+    fn a2a_config_with_target_agent_id() {
+        let config = A2aConfig::new("https://api.example.com").with_target_agent_id("agent-42");
+        assert_eq!(config.target_agent_id.as_deref(), Some("agent-42"));
+    }
+
+    #[test]
+    fn extract_output_text_prefers_artifacts_over_message() {
+        let response = A2aTaskResponse {
+            status: "completed".into(),
+            termination_code: None,
+            termination_detail: None,
+            message: Some(json!({"role": "assistant", "text": "message text"})),
+            history: vec![json!({"role": "assistant", "text": "history text"})],
+            artifacts: vec![json!({"text": "artifact text"})],
+        };
+        let text = extract_output_text(&response);
+        assert_eq!(text.as_deref(), Some("artifact text"));
+    }
 }

@@ -657,4 +657,97 @@ mod tests {
             "history pagination must use encoded message count"
         );
     }
+
+    // ── content_blocks_to_ui_parts tests ───────────────────────────────
+
+    #[test]
+    fn content_blocks_to_ui_parts_text() {
+        let blocks = vec![ContentBlock::text("hello")];
+        let parts = content_blocks_to_ui_parts(&blocks);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["type"].as_str(), Some("text"));
+        assert_eq!(parts[0]["text"].as_str(), Some("hello"));
+    }
+
+    #[test]
+    fn content_blocks_to_ui_parts_empty() {
+        let parts = content_blocks_to_ui_parts(&[]);
+        assert!(parts.is_empty());
+    }
+
+    #[test]
+    fn content_blocks_to_ui_parts_non_text_skipped() {
+        let blocks = vec![
+            ContentBlock::text("keep"),
+            ContentBlock::image_url("https://example.com/img.png"),
+        ];
+        let parts = content_blocks_to_ui_parts(&blocks);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["text"].as_str(), Some("keep"));
+    }
+
+    // ── tool_call_part tests ───────────────────────────────────────────
+
+    #[test]
+    fn tool_call_part_structure() {
+        let call = ToolCall::new("c1", "search", json!({"q": "rust"}));
+        let part = tool_call_part(&call);
+        assert_eq!(part["type"].as_str(), Some("tool-search"));
+        assert_eq!(part["toolName"].as_str(), Some("search"));
+        assert_eq!(part["toolCallId"].as_str(), Some("c1"));
+        assert_eq!(part["state"].as_str(), Some("input-available"));
+        assert_eq!(part["providerExecuted"].as_bool(), Some(true));
+        assert_eq!(part["input"]["q"].as_str(), Some("rust"));
+    }
+
+    // ── parse_tool_message_output tests ────────────────────────────────
+
+    #[test]
+    fn parse_tool_message_output_json() {
+        let msg = Message::tool("c1", r#"{"key": "value"}"#);
+        let output = parse_tool_message_output(&msg);
+        assert_eq!(output["key"].as_str(), Some("value"));
+    }
+
+    #[test]
+    fn parse_tool_message_output_plain_text() {
+        let msg = Message::tool("c1", "not json at all");
+        let output = parse_tool_message_output(&msg);
+        assert_eq!(output.as_str(), Some("not json at all"));
+    }
+
+    // ── parse_frame_json tests ─────────────────────────────────────────
+
+    #[test]
+    fn parse_frame_json_valid() {
+        let frame = Bytes::from("id: 1\ndata: {\"type\":\"text\"}\n\n");
+        let val = parse_frame_json(&frame).unwrap();
+        assert_eq!(val["type"].as_str(), Some("text"));
+    }
+
+    #[test]
+    fn parse_frame_json_no_data_line() {
+        let frame = Bytes::from("id: 1\nevent: ping\n\n");
+        assert!(parse_frame_json(&frame).is_none());
+    }
+
+    #[test]
+    fn parse_frame_json_invalid_json() {
+        let frame = Bytes::from("data: {not valid json}\n\n");
+        assert!(parse_frame_json(&frame).is_none());
+    }
+
+    // ── is_finish_step_frame tests ─────────────────────────────────────
+
+    #[test]
+    fn is_finish_step_frame_true() {
+        let frame = Bytes::from("id: 5\ndata: {\"type\":\"finish-step\"}\n\n");
+        assert!(is_finish_step_frame(&frame));
+    }
+
+    #[test]
+    fn is_finish_step_frame_false() {
+        let frame = Bytes::from("id: 5\ndata: {\"type\":\"text\"}\n\n");
+        assert!(!is_finish_step_frame(&frame));
+    }
 }

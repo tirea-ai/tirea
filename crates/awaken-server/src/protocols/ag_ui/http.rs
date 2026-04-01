@@ -508,4 +508,132 @@ mod tests {
         let (_, _, _, state, _, _) = req.into_parts();
         assert!(state.is_some());
     }
+
+    // ── parse_ag_ui_content tests ──────────────────────────────────────
+
+    #[test]
+    fn parse_ag_ui_content_string() {
+        let val = json!("hello world");
+        let blocks = parse_ag_ui_content(&val).unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert!(
+            matches!(&blocks[0], awaken_contract::contract::content::ContentBlock::Text { text } if text == "hello world")
+        );
+    }
+
+    #[test]
+    fn parse_ag_ui_content_array() {
+        let val = json!([
+            {"type": "text", "text": "hi"},
+            {"type": "image", "source": {"type": "url", "value": "https://example.com/img.png"}}
+        ]);
+        let blocks = parse_ag_ui_content(&val).unwrap();
+        assert_eq!(blocks.len(), 2);
+    }
+
+    #[test]
+    fn parse_ag_ui_content_null() {
+        let val = json!(null);
+        assert!(parse_ag_ui_content(&val).is_none());
+    }
+
+    #[test]
+    fn parse_ag_ui_content_empty_array() {
+        let val = json!([]);
+        assert!(parse_ag_ui_content(&val).is_none());
+    }
+
+    #[test]
+    fn parse_ag_ui_content_number() {
+        let val = json!(42);
+        assert!(parse_ag_ui_content(&val).is_none());
+    }
+
+    // ── input_part_to_block tests ──────────────────────────────────────
+
+    #[test]
+    fn input_part_to_block_text() {
+        use crate::protocols::ag_ui::types::InputContentPart;
+        let part: InputContentPart =
+            serde_json::from_value(json!({"type": "text", "text": "hello"})).unwrap();
+        let block = input_part_to_block(part).unwrap();
+        assert!(
+            matches!(block, awaken_contract::contract::content::ContentBlock::Text { text } if text == "hello")
+        );
+    }
+
+    #[test]
+    fn input_part_to_block_image_url() {
+        use crate::protocols::ag_ui::types::InputContentPart;
+        let part: InputContentPart = serde_json::from_value(json!({
+            "type": "image",
+            "source": {"type": "url", "value": "https://example.com/img.png"}
+        }))
+        .unwrap();
+        let block = input_part_to_block(part).unwrap();
+        assert!(matches!(
+            block,
+            awaken_contract::contract::content::ContentBlock::Image { .. }
+        ));
+    }
+
+    #[test]
+    fn input_part_to_block_image_data() {
+        use crate::protocols::ag_ui::types::InputContentPart;
+        let part: InputContentPart = serde_json::from_value(json!({
+            "type": "image",
+            "source": {"type": "data", "value": "base64data", "mimeType": "image/png"}
+        }))
+        .unwrap();
+        let block = input_part_to_block(part).unwrap();
+        assert!(matches!(
+            block,
+            awaken_contract::contract::content::ContentBlock::Image { .. }
+        ));
+    }
+
+    #[test]
+    fn input_part_to_block_audio_url() {
+        use crate::protocols::ag_ui::types::InputContentPart;
+        let part: InputContentPart = serde_json::from_value(json!({
+            "type": "audio",
+            "source": {"type": "url", "value": "https://example.com/audio.mp3"}
+        }))
+        .unwrap();
+        let block = input_part_to_block(part).unwrap();
+        assert!(matches!(
+            block,
+            awaken_contract::contract::content::ContentBlock::Audio { .. }
+        ));
+    }
+
+    #[test]
+    fn input_part_to_block_video_data() {
+        use crate::protocols::ag_ui::types::InputContentPart;
+        let part: InputContentPart = serde_json::from_value(json!({
+            "type": "video",
+            "source": {"type": "data", "value": "dmlkZW9kYXRh", "mimeType": "video/mp4"}
+        }))
+        .unwrap();
+        let block = input_part_to_block(part).unwrap();
+        assert!(matches!(
+            block,
+            awaken_contract::contract::content::ContentBlock::Video { .. }
+        ));
+    }
+
+    #[test]
+    fn input_part_to_block_document_url() {
+        use crate::protocols::ag_ui::types::InputContentPart;
+        let part: InputContentPart = serde_json::from_value(json!({
+            "type": "document",
+            "source": {"type": "url", "value": "https://example.com/doc.pdf"}
+        }))
+        .unwrap();
+        let block = input_part_to_block(part).unwrap();
+        assert!(matches!(
+            block,
+            awaken_contract::contract::content::ContentBlock::Document { .. }
+        ));
+    }
 }

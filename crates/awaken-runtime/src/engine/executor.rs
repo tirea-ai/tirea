@@ -261,3 +261,197 @@ impl LlmExecutor for GenaiExecutor {
         "genai"
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_contract::contract::executor::InferenceRequest;
+    use awaken_contract::contract::inference::InferenceOverride;
+    use awaken_contract::contract::message::Message;
+
+    /// Helper to build a minimal `InferenceRequest` with the given overrides.
+    fn make_request(overrides: Option<InferenceOverride>) -> InferenceRequest {
+        InferenceRequest {
+            model: "test-model".into(),
+            messages: vec![Message::user("hello")],
+            tools: vec![],
+            system: vec![],
+            overrides,
+            enable_prompt_cache: false,
+        }
+    }
+
+    // -- Constructor / trait tests --
+
+    #[test]
+    fn new_creates_executor() {
+        let exec = GenaiExecutor::new();
+        assert!(exec.default_options.is_none());
+    }
+
+    #[test]
+    fn default_creates_executor() {
+        let exec = GenaiExecutor::default();
+        assert!(exec.default_options.is_none());
+    }
+
+    #[test]
+    fn name_returns_genai() {
+        let exec = GenaiExecutor::new();
+        assert_eq!(exec.name(), "genai");
+    }
+
+    // -- build_options tests --
+
+    #[test]
+    fn build_options_defaults() {
+        let exec = GenaiExecutor::new();
+        let req = make_request(None);
+        let opts = exec.build_options(&req);
+
+        assert_eq!(opts.capture_usage, Some(true));
+        assert_eq!(opts.capture_content, Some(true));
+        assert_eq!(opts.capture_tool_calls, Some(true));
+        assert_eq!(opts.temperature, None);
+        assert_eq!(opts.max_tokens, None);
+        assert_eq!(opts.top_p, None);
+    }
+
+    #[test]
+    fn build_options_with_temperature() {
+        let exec = GenaiExecutor::new();
+        let req = make_request(Some(InferenceOverride {
+            temperature: Some(0.5),
+            ..Default::default()
+        }));
+        let opts = exec.build_options(&req);
+
+        assert_eq!(opts.temperature, Some(0.5));
+        assert_eq!(opts.max_tokens, None);
+        assert_eq!(opts.top_p, None);
+    }
+
+    #[test]
+    fn build_options_with_max_tokens() {
+        let exec = GenaiExecutor::new();
+        let req = make_request(Some(InferenceOverride {
+            max_tokens: Some(1024),
+            ..Default::default()
+        }));
+        let opts = exec.build_options(&req);
+
+        assert_eq!(opts.max_tokens, Some(1024));
+        assert_eq!(opts.temperature, None);
+        assert_eq!(opts.top_p, None);
+    }
+
+    #[test]
+    fn build_options_with_top_p() {
+        let exec = GenaiExecutor::new();
+        let req = make_request(Some(InferenceOverride {
+            top_p: Some(0.9),
+            ..Default::default()
+        }));
+        let opts = exec.build_options(&req);
+
+        assert_eq!(opts.top_p, Some(0.9));
+        assert_eq!(opts.temperature, None);
+        assert_eq!(opts.max_tokens, None);
+    }
+
+    #[test]
+    fn build_options_with_all_overrides() {
+        let exec = GenaiExecutor::new();
+        let req = make_request(Some(InferenceOverride {
+            temperature: Some(0.7),
+            max_tokens: Some(2048),
+            top_p: Some(0.95),
+            ..Default::default()
+        }));
+        let opts = exec.build_options(&req);
+
+        assert_eq!(opts.temperature, Some(0.7));
+        assert_eq!(opts.max_tokens, Some(2048));
+        assert_eq!(opts.top_p, Some(0.95));
+        assert_eq!(opts.capture_usage, Some(true));
+        assert_eq!(opts.capture_content, Some(true));
+        assert_eq!(opts.capture_tool_calls, Some(true));
+    }
+
+    #[test]
+    fn build_options_with_default_options() {
+        let base = ChatOptions::default()
+            .with_temperature(0.3)
+            .with_max_tokens(512);
+        let exec = GenaiExecutor::new().with_options(base);
+        // Override only temperature; max_tokens should come from the executor defaults.
+        let req = make_request(Some(InferenceOverride {
+            temperature: Some(0.9),
+            ..Default::default()
+        }));
+        let opts = exec.build_options(&req);
+
+        // Per-request override wins for temperature.
+        assert_eq!(opts.temperature, Some(0.9));
+        // Executor-level default preserved for max_tokens.
+        assert_eq!(opts.max_tokens, Some(512));
+        // Capture flags still applied.
+        assert_eq!(opts.capture_usage, Some(true));
+    }
+
+    // -- map_error tests --
+    //
+    // `genai::Error::Internal(String)` is the easiest variant to construct.
+    // Its Display is "Internal error: {msg}", so we embed the target substring
+    // (e.g. "429", "rate", "timeout") in the message to exercise each branch.
+
+    #[test]
+    fn map_error_rate_limited_429() {
+        let err = genai::Error::Internal("server returned 429".into());
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::RateLimited(_)),
+            "expected RateLimited, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_rate_word() {
+        let err = genai::Error::Internal("rate limit exceeded".into());
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::RateLimited(_)),
+            "expected RateLimited, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_timeout() {
+        let err = genai::Error::Internal("connection timeout".into());
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::Timeout(_)),
+            "expected Timeout, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_timed_out() {
+        let err = genai::Error::Internal("request timed out".into());
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::Timeout(_)),
+            "expected Timeout, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_error_generic() {
+        let err = genai::Error::Internal("something went wrong".into());
+        let mapped = GenaiExecutor::map_error(err);
+        assert!(
+            matches!(mapped, InferenceExecutionError::Provider(_)),
+            "expected Provider, got {mapped:?}"
+        );
+    }
+}
