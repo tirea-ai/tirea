@@ -1,3 +1,5 @@
+use awaken_runtime::state::StateKey;
+
 use crate::config::*;
 use crate::policy::*;
 use crate::state::*;
@@ -230,4 +232,177 @@ fn disc_beta_respects_defer_after_threshold() {
     // Turn 14, last used at 8 => idle = 6, above defer_after=5
     let defers = DiscBetaEvaluator::tools_to_defer(&disc_beta, &state, &config, 14);
     assert_eq!(defers, vec!["mcp__tool"]);
+}
+
+// ---------------------------------------------------------------------------
+// Bug reproduction: ConfigOnlyPolicy re-defers runtime-promoted tools
+// ---------------------------------------------------------------------------
+//
+// When ToolSearch (or skill activation) promotes a deferred tool at runtime,
+// the next BeforeInference hook runs ConfigOnlyPolicy which re-evaluates
+// all tools against static config rules. Since config still says the tool
+// should be Deferred, ConfigOnlyPolicy emits a Defer decision that
+// immediately reverses the promote — the tool is only visible for 1 turn.
+
+/// Simulates the OLD (buggy) BeforeInference hook that re-ran ConfigOnlyPolicy
+/// every turn, overriding runtime promotes.
+fn simulate_before_inference_old(
+    state: &DeferralStateValue,
+    config: &DeferredToolsConfig,
+    policy: &dyn DeferralPolicy,
+    disc_beta: &DiscBetaStateValue,
+    usage_stats: &ToolUsageStatsValue,
+) -> DeferralStateValue {
+    let tool_ids: Vec<String> = state.modes.keys().cloned().collect();
+    let decisions = policy.evaluate(usage_stats, state, config, &tool_ids);
+
+    let mut effective = state.clone();
+    for decision in &decisions {
+        let current = state
+            .modes
+            .get(&decision.tool_id)
+            .copied()
+            .unwrap_or(ToolLoadMode::Eager);
+        if current != decision.target_mode {
+            effective
+                .modes
+                .insert(decision.tool_id.clone(), decision.target_mode);
+        }
+    }
+
+    let re_defer_ids =
+        DiscBetaEvaluator::tools_to_defer(disc_beta, &effective, config, usage_stats.total_turns);
+    for id in re_defer_ids {
+        effective.modes.insert(id, ToolLoadMode::Deferred);
+    }
+
+    effective
+}
+
+/// Simulates the FIXED BeforeInference hook: no ConfigOnlyPolicy re-evaluation,
+/// only DiscBeta re-defer for idle tools.
+fn simulate_before_inference_fixed(
+    state: &DeferralStateValue,
+    config: &DeferredToolsConfig,
+    disc_beta: &DiscBetaStateValue,
+    usage_stats: &ToolUsageStatsValue,
+) -> DeferralStateValue {
+    let mut effective = state.clone();
+
+    let re_defer_ids =
+        DiscBetaEvaluator::tools_to_defer(disc_beta, &effective, config, usage_stats.total_turns);
+    for id in re_defer_ids {
+        effective.modes.insert(id, ToolLoadMode::Deferred);
+    }
+
+    effective
+}
+
+/// Demonstrates the bug: ConfigOnlyPolicy re-defers a runtime-promoted tool
+/// after just 1 turn.
+#[test]
+fn config_only_policy_re_defers_promoted_tool_old_behavior() {
+    let config = DeferredToolsConfig {
+        enabled: Some(true),
+        rules: vec![],
+        ..Default::default()
+    };
+    let policy = ConfigOnlyPolicy;
+    let disc_beta = DiscBetaStateValue::default();
+    let stats = ToolUsageStatsValue::default();
+
+    let mut state = DeferralStateValue::default();
+    state
+        .modes
+        .insert("mcp__query".into(), ToolLoadMode::Deferred);
+
+    // ToolSearch promotes mcp__query.
+    DeferralState::apply(
+        &mut state,
+        DeferralStateAction::Promote("mcp__query".into()),
+    );
+    assert_eq!(state.modes["mcp__query"], ToolLoadMode::Eager);
+
+    // OLD hook: ConfigOnlyPolicy overrides the promote.
+    let effective = simulate_before_inference_old(&state, &config, &policy, &disc_beta, &stats);
+    assert_eq!(
+        effective.modes["mcp__query"],
+        ToolLoadMode::Deferred,
+        "OLD behavior: ConfigOnlyPolicy re-deferred a runtime-promoted tool"
+    );
+}
+
+/// Verifies the fix: runtime-promoted tool survives BeforeInference.
+#[test]
+fn promoted_tool_survives_before_inference_after_fix() {
+    let config = DeferredToolsConfig {
+        enabled: Some(true),
+        rules: vec![],
+        ..Default::default()
+    };
+    let disc_beta = DiscBetaStateValue::default();
+    let stats = ToolUsageStatsValue::default();
+
+    let mut state = DeferralStateValue::default();
+    state
+        .modes
+        .insert("mcp__query".into(), ToolLoadMode::Deferred);
+
+    // ToolSearch promotes the tool.
+    DeferralState::apply(
+        &mut state,
+        DeferralStateAction::Promote("mcp__query".into()),
+    );
+
+    // FIXED hook: no ConfigOnlyPolicy, only DiscBeta.
+    let effective = simulate_before_inference_fixed(&state, &config, &disc_beta, &stats);
+    assert_eq!(
+        effective.modes["mcp__query"],
+        ToolLoadMode::Eager,
+        "FIXED: promoted tool should survive BeforeInference"
+    );
+}
+
+/// Verifies DiscBeta can still re-defer an idle promoted tool after the fix.
+#[test]
+fn disc_beta_still_re_defers_idle_promoted_tool() {
+    let config = DeferredToolsConfig {
+        enabled: Some(true),
+        rules: vec![],
+        disc_beta: DiscBetaParams {
+            omega: 0.95,
+            n0: 5.0,
+            defer_after: 5,
+            thresh_mult: 0.5,
+            gamma: 2000.0,
+        },
+        ..Default::default()
+    };
+
+    let mut disc_beta = DiscBetaStateValue::default();
+    disc_beta.tools.insert(
+        "mcp__query".into(),
+        DiscBetaEntry {
+            alpha: 0.01,
+            beta_param: 10.0,
+            last_used_turn: Some(0),
+            c: 5000.0,
+            c_bar: 10.0,
+        },
+    );
+
+    let mut state = DeferralStateValue::default();
+    state.modes.insert("mcp__query".into(), ToolLoadMode::Eager);
+
+    let stats = ToolUsageStatsValue {
+        total_turns: 20, // idle for 20 turns >> defer_after=5
+        ..Default::default()
+    };
+
+    let effective = simulate_before_inference_fixed(&state, &config, &disc_beta, &stats);
+    assert_eq!(
+        effective.modes["mcp__query"],
+        ToolLoadMode::Deferred,
+        "DiscBeta should re-defer idle promoted tool"
+    );
 }
