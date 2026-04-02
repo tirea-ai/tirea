@@ -109,6 +109,14 @@ export function ChatLayout({
             ))}
           </select>
         </div>
+        <div className="border-t border-slate-200 p-3">
+          <a
+            href="/admin"
+            className="block rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-center text-sm text-slate-600 transition hover:bg-slate-100"
+          >
+            Admin Panel
+          </a>
+        </div>
       </aside>
 
       {/* Main content */}
