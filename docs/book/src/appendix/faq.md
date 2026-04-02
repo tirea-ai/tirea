@@ -28,7 +28,7 @@ Scope is declared when defining a `StateKey`.
 
 ## How do I handle tool errors?
 
-Return `ToolResult::Error` from your tool's `execute` method. The runtime writes the error result back to the conversation as a tool response message and continues the inference loop. The LLM sees the error and can retry or adjust its approach. For fatal errors that should stop the run, return a `RuntimeError` instead.
+Return `ToolResult::error(tool_name, message)` from your tool's `execute` method. The runtime writes the error result back to the conversation as a tool response message and continues the inference loop. The LLM sees the error and can retry or adjust its approach. For fatal errors that should stop the run, return a `ToolError` instead.
 
 ## Can tools run in parallel?
 
@@ -36,7 +36,7 @@ Yes. Configure `ToolExecutionMode` in the agent spec. When set to parallel mode,
 
 ## How do I debug a run that is stuck?
 
-Check `RunStatus` in state (`__run` key). If `Waiting`, look at `__suspended_tool_calls` for pending decisions. If `Running`, check if max_rounds or timeout was hit. Enable observability plugin to get per-phase tracing.
+Check `RunStatus` in state (`__runtime.run_lifecycle` key). If `Waiting`, look at `__runtime.tool_call_states` for pending decisions. If `Running`, check if max_rounds or timeout was hit. Enable observability plugin to get per-phase tracing.
 
 ## How do I test without a real LLM?
 
@@ -56,7 +56,7 @@ Yes. Implement `ThreadRunStore` (for state persistence) and optionally `MailboxS
 
 ## How does context compaction work?
 
-When `autocompact` is enabled in `ContextWindowPolicy`, the `CompactionPlugin` monitors token usage. When the context exceeds `max_context_tokens`, it finds a safe compaction boundary (where all tool call/result pairs are complete), summarizes older messages via LLM, and replaces them with a `<conversation-summary>` message. See [Optimize Context Window](../how-to/optimize-context-window.md).
+When `autocompact_threshold: Option<usize>` is set in `ContextWindowPolicy`, the `CompactionPlugin` monitors token usage. When the context exceeds that threshold, it finds a safe compaction boundary (where all tool call/result pairs are complete), summarizes older messages via LLM, and replaces them with a `<conversation-summary>` message. See [Optimize Context Window](../how-to/optimize-context-window.md).
 
 ## How do I choose between AI SDK v6, AG-UI, and A2A protocols?
 

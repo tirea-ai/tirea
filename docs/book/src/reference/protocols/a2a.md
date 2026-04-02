@@ -2,7 +2,7 @@
 
 The Agent-to-Agent (A2A) adapter implements Google's [A2A protocol](https://google.github.io/A2A/) for remote agent discovery, task delegation, and inter-agent communication.
 
-**Feature gate**: `a2a`
+**Feature gate**: `server`
 
 ## Endpoints
 

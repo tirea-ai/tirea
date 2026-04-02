@@ -24,23 +24,34 @@ tracing-subscriber = "0.3"
 ```rust,ignore
 use std::sync::Arc;
 
+use awaken::engine::GenaiExecutor;
 use awaken::contract::storage::ThreadRunStore;
-use awaken::registry_spec::AgentSpec;
-use awaken::{AgentRuntimeBuilder, RunRequest};
+use awaken::registry_spec::{AgentSpec, ModelSpec};
+use awaken::stores::{InMemoryMailboxStore, InMemoryStore};
+use awaken::AgentRuntimeBuilder;
 use awaken::server::app::{AppState, ServerConfig};
+use awaken::server::mailbox::{Mailbox, MailboxConfig};
 use awaken::server::routes::build_router;
-use awaken::stores::InMemoryStore;
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().with_target(true).init();
 
     let agent_spec = AgentSpec::new("my-agent")
-        .with_model("default")
+        .with_model("gpt-4o-mini")
         .with_system_prompt("You are a helpful assistant.")
         .with_max_rounds(10);
 
     let runtime = AgentRuntimeBuilder::new()
+        .with_provider("openai", Arc::new(GenaiExecutor::new()))
+        .with_model(
+            "gpt-4o-mini",
+            ModelSpec {
+                id: "gpt-4o-mini".into(),
+                provider: "openai".into(),
+                model: "gpt-4o-mini".into(),
+            },
+        )
         .with_agent_spec(agent_spec)
         .build()
         .expect("failed to build runtime");
@@ -49,12 +60,12 @@ async fn main() {
     let store = Arc::new(InMemoryStore::new());
     let resolver = runtime.resolver_arc();
 
-    let mailbox_store = Arc::new(awaken::stores::InMemoryMailboxStore::new());
-    let mailbox = Arc::new(awaken::server::mailbox::Mailbox::new(
+    let mailbox_store = Arc::new(InMemoryMailboxStore::new());
+    let mailbox = Arc::new(Mailbox::new(
         runtime.clone(),
         mailbox_store as Arc<dyn awaken::contract::MailboxStore>,
         format!("ai-sdk:{}", std::process::id()),
-        awaken::server::mailbox::MailboxConfig::default(),
+        MailboxConfig::default(),
     ));
 
     let state = AppState::new(
@@ -80,7 +91,8 @@ async fn main() {
 The server automatically registers AI SDK v6 routes at:
 
 - `POST /v1/ai-sdk/chat` -- create a new run and stream events
-- `GET /v1/ai-sdk/streams/:run_id` -- resume an existing stream
+- `GET /v1/ai-sdk/chat/:thread_id/stream` -- resume an existing stream by thread ID
+- `GET /v1/ai-sdk/threads/:thread_id/stream` -- alias for thread-based resume
 - `GET /v1/ai-sdk/threads/:id/messages` -- retrieve thread messages
 
 2. Connect the React frontend.
@@ -99,6 +111,7 @@ import { useChat } from "@ai-sdk/react";
 export default function Chat() {
   const { messages, input, handleInputChange, handleSubmit } = useChat({
     api: "http://localhost:3000/v1/ai-sdk/chat",
+    id: "thread-1",
   });
 
   return (
@@ -145,7 +158,7 @@ npm run dev
 
 ## Related Example
 
-- `examples/examples/ai_sdk_starter.rs`
+- `examples/ai-sdk-starter/agent/src/main.rs`
 
 ## Key Files
 
@@ -155,7 +168,7 @@ npm run dev
 | `crates/awaken-server/src/protocols/ai_sdk_v6/encoder.rs` | AI SDK v6 SSE event encoder |
 | `crates/awaken-server/src/routes.rs` | Unified router builder |
 | `crates/awaken-server/src/app.rs` | `AppState` and `ServerConfig` |
-| `examples/examples/ai_sdk_starter.rs` | Full working example |
+| `examples/ai-sdk-starter/agent/src/main.rs` | Backend entry for the AI SDK starter |
 
 ## Related
 

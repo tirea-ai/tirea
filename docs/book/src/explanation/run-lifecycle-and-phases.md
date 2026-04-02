@@ -180,7 +180,7 @@ When an LLM returns multiple tool calls (e.g. `[tool_A, tool_B, tool_C]`), their
 states evolve independently:
 
 ```text
-Time  tool_A(需审批)  tool_B(需审批)  tool_C(正常)   → Run Status
+Time  tool_A(approval-req)  tool_B(approval-req)  tool_C(normal)   → Run Status
 ────────────────────────────────────────────────────────────────
 t0    Created        Created        Created        Running     Step starts
 t1    Suspended      Created        Running        Running     tool_A intercepted

@@ -1,8 +1,12 @@
 # Awaken
 
-**A production-ready AI agent runtime for Rust — type-safe state, phase-based execution, multi-protocol serving.**
+[English](./README.md) | [中文](./docs/book/README.zh-CN.md)
 
-Build production AI agents with compile-time guarantees, deterministic phase execution, and built-in observability. Define your agent logic once and serve it over AI SDK, AG-UI, A2A, and MCP from a single binary.
+**A high-performance AI agent runtime for Rust — build once, serve everywhere, extend through plugins.**
+
+Define your agent's identity and tools, let the LLM orchestrate everything, and serve it over multiple protocols from a single binary. Extend agent behavior through a composable plugin system with compile-time safety.
+
+> **Status:** Awaken is in active development. Contract types are stable; runtime and server APIs may still evolve. See [Project status](#project-status) for details.
 
 > **Note:** Awaken is a ground-up rewrite of [tirea](../../tree/tirea-0.5), redesigned for simplicity and production reliability. The tirea 0.5 codebase is archived on the [`tirea-0.5`](../../tree/tirea-0.5) branch for reference. Awaken is **not** backwards-compatible with tirea — see the [migration guide](./docs/book/src/appendix/migration-from-tirea.md).
 
@@ -10,42 +14,10 @@ Build production AI agents with compile-time guarantees, deterministic phase exe
 
 1. **Tools** — typed functions your agent can call; JSON schema is generated at compile time
 2. **Agents** — each agent has a system prompt, a model, and a set of allowed tools; the LLM drives orchestration through natural language — no predefined graphs
-3. **State** — typed, scoped (thread / run / tool-call), with merge strategies for safe concurrent writes and immutable snapshots
+3. **State** — typed and scoped (`thread` / `run`), with merge strategies for safe concurrent writes and immutable snapshots
 4. **Plugins** — lifecycle hooks for permissions, observability, context management, skills, MCP, and more
 
 Your agent picks tools, calls them, reads and updates state, and repeats — all orchestrated by the runtime through 8 typed phases. Every state change is committed atomically after the gather phase.
-
-## Why Awaken
-
-| What you get | How it works |
-|---|---|
-| **Ship one backend for every frontend** | Serve React (AI SDK v6), Next.js (AG-UI), other agents (A2A), and tool servers (MCP) from the same binary. No separate deployments. |
-| **LLM orchestrates everything — no DAGs** | Define each agent's identity and tool access; the LLM decides when to delegate, to whom, and how to combine results. No hand-coded graphs or state machines. |
-| **Type-safe state with scoping and replay** | State is a Rust struct with compile-time checks. Merge strategies handle concurrent writes without locks. Scope to thread, run, or tool-call. Every change is an immutable snapshot you can replay. |
-| **Catch plugin wiring errors at compile time** | Plugins hook into 8 typed lifecycle phases. Wire a permission check to the wrong phase? The compiler tells you, not your users. |
-| **Production resilience built in** | Circuit breaker, exponential backoff, inference timeout, graceful shutdown, Prometheus metrics, and health probes — all included. |
-| **Zero `unsafe` code** | The entire workspace forbids `unsafe`. Memory safety is guaranteed by the Rust compiler. |
-
-### Feature comparison
-
-|  | Awaken | LangGraph | AG2 | CrewAI | OpenAI Agents | Mastra |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|
-| **Language** | Rust | Python/TS | Python | Python | Python/TS | TypeScript |
-| **Orchestration** | Tool delegation | Stateful graph | Conversational | Role-based | Handoffs + as_tool | Workflow + LLM |
-| **Multi-protocol server** | AG-UI · AI SDK · A2A · MCP | ◐ | ◐ | ◐ | ❌ | AG-UI · AI SDK · A2A |
-| **Typed state** | ✅ scoping + merge + replay | ◐ | ❌ | ◐ | ❌ | ◐ |
-| **Plugin lifecycle** | 8 typed phases | Middleware | ◐ | ◐ | Guardrails | ◐ |
-| **Agent handoff** | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| **Per-inference override** | ✅ model + temperature | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Sub-agents** | ✅ | ✅ | ✅ group chat | ✅ | ✅ | ✅ |
-| **MCP support** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Human-in-the-loop** | ✅ durable mailbox | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Observability** | ✅ OpenTelemetry | ✅ LangSmith | ✅ OpenTelemetry | ◐ | ✅ | ◐ |
-| **Persistence** | ✅ file + postgres | ✅ | ◐ | ◐ | ◐ | ✅ |
-| **Circuit breaker** | ✅ per-model | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Deferred tool loading** | ✅ probability model | ❌ | ❌ | ❌ | ❌ | ❌ |
-
-✅ = native  ◐ = partial  ❌ = not available
 
 ## Quick setup
 
@@ -56,16 +28,17 @@ cargo install lefthook && lefthook install   # git hooks (format, lint, secrets)
 cargo build --workspace
 ```
 
-> **Prerequisites**: Rust 1.93+ (via `rust-toolchain.toml`), an LLM provider API key (OpenAI, Anthropic, or DeepSeek).
+> **Prerequisites**: Rust toolchain `1.93.0` (pinned in `rust-toolchain.toml`; workspace `rust-version` metadata is `1.85`) and an LLM provider API key (OpenAI, Anthropic, or DeepSeek).
 
 ## Usage
 
-### Define tools
+### Define a tool
 
 ```rust
 use awaken::prelude::*;
+use awaken::contract::tool::ToolOutput;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct SearchArgs {
@@ -78,7 +51,6 @@ struct SearchTool;
 #[async_trait]
 impl Tool for SearchTool {
     fn descriptor(&self) -> ToolDescriptor {
-        // JSON schema for args is set via .with_parameters(); see schemars docs
         ToolDescriptor::new("search", "search", "Search the web for information")
             .with_parameters(schemars::schema_for!(SearchArgs).into())
     }
@@ -94,52 +66,94 @@ impl Tool for SearchTool {
 }
 ```
 
-### Define agents and assemble
+### Assemble agents into a runtime
 
 ```rust
 use awaken::prelude::*;
+use awaken::engine::GenaiExecutor;
+use awaken::stores::InMemoryStore;
 use std::sync::Arc;
 
-// Define agents — each selects which tools it can use
-let mut planner = AgentSpec::new("planner")
-    .with_model("gpt-4o")
-    .with_system_prompt("You are a travel planner. Use search tools to find options.")
-    .with_max_rounds(8);
-planner.allowed_tools = Some(vec!["search_flights".into(), "search_hotels".into()]);
-
-let researcher = AgentSpec::new("researcher")
-    .with_model("deepseek-chat")
-    .with_system_prompt("You research destinations and provide summaries.")
-    .with_max_rounds(4);
-
-// Assemble into runtime
 let runtime = AgentRuntimeBuilder::new()
-    .with_agent_spec(planner)
-    .with_agent_spec(researcher)
-    .with_tool("search_flights", Arc::new(SearchFlightsTool))
-    .with_tool("search_hotels", Arc::new(SearchHotelsTool))
-    .with_plugin("permission", Arc::new(PermissionPlugin))
-    .with_thread_run_store(Arc::new(FileStore::new("./sessions")))
+    .with_provider("openai", Arc::new(GenaiExecutor::new()))
+    .with_model(
+        "gpt-4o-mini",
+        ModelSpec {
+            id: "gpt-4o-mini".into(),
+            provider: "openai".into(),
+            model: "gpt-4o-mini".into(),
+        },
+    )
+    .with_tool("search", Arc::new(SearchTool))
+    .with_agent_spec(
+        AgentSpec::new("researcher")
+            .with_model("gpt-4o-mini")
+            .with_system_prompt("You research destinations and provide summaries.")
+            .with_max_rounds(4),
+    )
+    .with_thread_run_store(Arc::new(InMemoryStore::new()))
     .build()?;
 ```
+
+> **Note:** `with_provider()` and `with_model()` wire up the LLM executor; `with_plugin()` registers a plugin; `.with_hook_filter()` on `AgentSpec` activates that plugin for the agent. See [Plugin activation](#plugin-activation-model) for details.
 
 ### Connect to any frontend
 
 Start the server, then connect from React, Next.js, or another agent — no code changes:
 
 ```rust
-let state = AppState::new(runtime, mailbox, store, resolver, ServerConfig::default());
+use awaken::prelude::*;
+use awaken::stores::{InMemoryMailboxStore, InMemoryStore};
+use std::sync::Arc;
+
+let store = Arc::new(InMemoryStore::new());
+let runtime = Arc::new(runtime);
+let mailbox = Arc::new(Mailbox::new(
+    runtime.clone(),
+    Arc::new(InMemoryMailboxStore::new()),
+    "default-consumer".into(),
+    MailboxConfig::default(),
+));
+
+let state = AppState::new(
+    runtime.clone(),
+    mailbox,
+    store,
+    runtime.resolver_arc(),
+    ServerConfig::default(),
+);
 serve(state).await?;
 ```
+
+#### Frontend protocols
 
 | Protocol | Endpoint | Frontend |
 |---|---|---|
 | AI SDK v6 | `POST /v1/ai-sdk/chat` | React `useChat()` |
 | AG-UI | `POST /v1/ag-ui/run` | CopilotKit `<CopilotKit>` |
 | A2A | `POST /v1/a2a/tasks/send` | Other agents |
-| Native | `POST /v1/threads/:id/runs` | Any HTTP client |
-| Health | `GET /health` · `GET /health/live` | Kubernetes probes |
-| Metrics | `GET /metrics` | Prometheus |
+
+#### Native HTTP API
+
+| Endpoint | Description |
+|---|---|
+| `POST /v1/runs` | Start a new run |
+| `GET /v1/threads` | List threads |
+| `GET /v1/runs/:id` | Get run status |
+
+#### MCP
+
+| Endpoint | Status |
+|---|---|
+| `POST /v1/mcp` | JSON-RPC 2.0 request/response |
+| `GET /v1/mcp` | SSE — not yet implemented (returns 405) |
+
+#### Operational
+
+| Endpoint | Description |
+|---|---|
+| `GET /health` · `GET /health/live` | Kubernetes probes |
+| `GET /metrics` | Prometheus metrics |
 
 **React + AI SDK v6:**
 
@@ -161,17 +175,81 @@ import { CopilotKit } from "@copilotkit/react-core";
 </CopilotKit>
 ```
 
-### Built-in plugins
+## Built-in plugins
 
-| Plugin | What it does | Feature flag |
+Awaken extends agent capabilities through a composable plugin system built on 8 typed lifecycle phases.
+
+| Plugin | Description | Feature flag |
 |---|---|---|
-| **Permission** | Allow/Deny/Ask per tool, human-in-the-loop suspension | `permission` |
-| **Observability** | OpenTelemetry spans for LLM calls and tool executions | `observability` |
-| **MCP** | Connect to MCP servers; tools discovered automatically | `mcp` |
-| **Skills** | Discover and activate skill packages from filesystem | `skills` |
-| **Reminder** | Persistent context messages that survive across turns | `reminder` |
-| **Generative UI** | Declarative UI components sent to frontends (A2UI) | `generative-ui` |
-| **Deferred Tools** | Lazy tool loading with ToolSearch and probability model | `deferred-tools` |
+| **Permission** | Firewall-style tool access control: evaluates Deny > Allow > Ask rules by priority with glob/regex matching on tool names and arguments. Ask policy triggers human-in-the-loop suspension via the mailbox. | `permission` |
+| **Reminder** | Rule-based context injection: when a tool call matches a configured pattern and output condition, automatically injects a system/session/conversation-level context message. Supports cooldown to prevent repetition. | `reminder` |
+| **Observability** | OpenTelemetry telemetry aligned with GenAI Semantic Conventions: captures per-inference and per-tool metrics, supports in-memory, file, and OTLP export. | `observability` |
+| **MCP** | Model Context Protocol client: connects to external MCP servers and automatically discovers and registers their tools as native Awaken tools. | `mcp` |
+| **Skills** | Skill package discovery and activation: supports filesystem and compile-time embedded skill sources. Injects a skill catalog before inference so the LLM can select and activate skills on demand. | `skills` |
+| **Generative UI** | Server-driven UI rendering: streams declarative UI components to frontends via the A2UI protocol, enabling rich interactive experiences without frontend changes. | `generative-ui` |
+
+The `awaken-ext-deferred-tools` crate provides lazy tool loading with a probability model, but is not exposed through the `awaken` facade crate — depend on it directly if needed.
+
+### Plugin activation model
+
+Enabling a plugin involves three distinct steps:
+
+1. **Cargo feature flag** — controls whether the extension crate is compiled into your binary (all enabled by default via the `full` feature)
+2. **`.with_plugin(id, plugin)`** on the builder — registers the plugin in the runtime's plugin registry
+3. **`.with_hook_filter(id)`** on `AgentSpec` — activates the plugin's hooks for that specific agent
+
+This means different agents can use different subsets of registered plugins. A plugin registered but not referenced by any agent's hook filter will not execute.
+
+### Reminder: configuration-driven context injection
+
+The Reminder plugin is a key mechanism for managing agent behavior through configuration rather than code. It lets you define declarative rules that automatically inject context messages into conversations based on tool execution patterns.
+
+Each rule has three parts:
+
+- **Trigger pattern** — matches tool name and arguments (e.g., `"Bash"`, `"Edit(file_path ~ '*.toml')"`)
+- **Output condition** — matches execution result (success/error/any, or content pattern)
+- **Injected message** — a context message at a chosen level (system, suffix_system, session, or conversation)
+
+For example, you can configure a rule so that when the agent runs a `Bash` command that returns an error, a system-level reminder like "check if the command requires sudo" is automatically injected. This means agent behavior policies live in configuration files, not hardcoded in prompts — making them easy to iterate, version, and share across agents.
+
+## Why Awaken
+
+| What you get | How it works |
+|---|---|
+| **Ship one backend for every frontend** | Serve React (AI SDK v6), Next.js (AG-UI), other agents (A2A), and tool servers (MCP) from the same binary. No separate deployments. |
+| **LLM orchestrates everything — no DAGs** | Define each agent's identity and tool access; the LLM decides when to delegate, to whom, and how to combine results. No hand-coded graphs or state machines. |
+| **Composable plugin system** | 8 typed lifecycle phases. Permission, context injection, observability, tool discovery — all wired declaratively. Phase hooks are type-safe (`PhaseHook` trait), and the plugin registration API catches misconfigurations at build time. |
+| **Type-safe state with scoping and replay** | State is a Rust struct with compile-time checks. Merge strategies handle concurrent writes without locks. Scope to thread or run. Every change is an immutable snapshot you can replay. |
+| **Production resilience built in** | Circuit breaker, exponential backoff, inference timeout, graceful shutdown, Prometheus metrics, and health probes — all included. |
+| **Zero `unsafe` code** | The entire workspace forbids `unsafe`. Memory safety is guaranteed by the Rust compiler. |
+
+## Compared with other frameworks
+
+The ecosystem moves too quickly for a large feature matrix to stay reliable. A better summary is:
+
+| Framework | Best known for | Compared with Awaken |
+|---|---|---|
+| **LangGraph** | Python/TS graph orchestration with persistence, memory, and handoffs | Better fit if you want graph-first orchestration in Python. Awaken is stronger when you want a Rust runtime with typed state and a built-in multi-protocol server. |
+| **AG2** | Python multi-agent conversations, group chat, and protocol integrations | Better fit if your team wants Python-first conversational agent systems. Awaken is stronger when you want explicit runtime layering, typed state, and durable server-side control. |
+| **CrewAI** | Python `Crews + Flows` workflows and operations tooling | Better fit if you want workflow-driven orchestration and Python tooling. Awaken is stronger when you want LLM-led tool orchestration with Rust-level safety and protocol serving from one backend. |
+| **OpenAI Agents SDK** | OpenAI-first agent SDK with hosted tools, sessions, MCP, and guardrails | Better fit if you want OpenAI-managed batteries-included tooling. Awaken is stronger when you want provider-neutral runtime composition, your own storage, and your own server surface. |
+| **Mastra** | TypeScript full-stack agent apps with AI SDK, MCP, memory, and frontend integration | Better fit if your stack is already TypeScript end to end. Awaken is stronger when the backend must be Rust and runtime concerns need to stay server-side. |
+
+## When to use Awaken
+
+- You want a **Rust backend** for AI agents with compile-time safety
+- You need to serve **multiple frontend or agent protocols** from one backend
+- Your tools need to **safely share state** during concurrent execution
+- You need **auditable thread history**, checkpoints, and resumable control paths
+- You are comfortable wiring your own tools, providers, and model registry instead of relying on batteries-included defaults
+
+## When NOT to use Awaken
+
+- You need **built-in file/shell/web tools** out of the box — consider OpenAI Agents SDK, Dify, or CrewAI
+- You want a **visual workflow builder** — consider Dify, LangGraph Studio
+- You want **Python** and rapid prototyping — consider LangGraph, AG2, PydanticAI
+- You need a **stable, slow-moving surface area** more than an evolving runtime platform
+- You need **LLM-managed memory** (agent decides what to remember) — consider Letta
 
 ### Manage state across conversations
 
@@ -198,7 +276,6 @@ impl StateKey for UserPreferences {
 |---|---|---|
 | `Thread` | Persists across all runs | User preferences, conversation memory |
 | `Run` (default) | Reset at each run start | Search progress, tool call tracking |
-| `ToolCall` | Exists during one tool execution | Temporary workspace |
 
 ### Persist conversations
 
@@ -210,32 +287,22 @@ Swap storage backends without changing agent code:
 | `FileStore` | Local development, single-server deployment |
 | `PostgresStore` | Production with SQL queries and backups |
 
-## When to use Awaken
-
-- You want a **Rust backend** for AI agents with compile-time safety
-- You need to serve **multiple frontend protocols** from one server
-- Your tools need to **safely share state** during concurrent execution
-- You need **auditable state history** and replay
-- You're building for **production** — low memory, no GC, circuit breakers, Prometheus metrics
-
-## When NOT to use Awaken
-
-- You need **built-in file/shell/web tools** out of the box — consider Dify, CrewAI
-- You want a **visual workflow builder** — consider Dify, LangGraph Studio
-- You want **Python** and rapid prototyping — consider LangGraph, AG2, PydanticAI
-- You need **LLM-managed memory** (agent decides what to remember) — consider Letta
-
 ## Architecture
 
-```
+Awaken is split into three runtime layers. `awaken-contract` defines the shared contracts: agent specs, model/provider specs, tools, events, transport traits, and the typed state model. `awaken-runtime` resolves an `AgentSpec` into a `ResolvedAgent`, builds an `ExecutionEnv` from plugins, executes the phase loop, and manages active runs plus external control such as cancellation and HITL decisions. `awaken-server` exposes that same runtime through HTTP routes, SSE replay, mailbox-backed background execution, and protocol adapters for AI SDK v6, AG-UI, A2A, and MCP.
+
+Around those layers sit storage and extensions. `awaken-stores` provides memory, file, and PostgreSQL backends for threads and runs. `awaken-ext-*` crates extend the runtime at phase and tool boundaries with permission checks, observability, MCP tool discovery, skills, reminders, generative UI, and deferred-tool loading.
+
+### Repository Map
+
+```text
 awaken                   Facade crate with feature flags
-  awaken-contract        Types, traits, state model, agent specs
-  awaken-runtime         Phase execution engine, plugin system, agent loop
-  awaken-server          Axum HTTP server, SSE, protocol adapters, mailbox
-  awaken-stores          Memory, file, and PostgreSQL storage backends
-  awaken-tool-pattern    Glob/regex tool matching
-  awaken-ext-*           Extensions (permission, observability, mcp, skills,
-                         reminder, generative-ui, deferred-tools)
+├─ awaken-contract       Contracts: specs, tools, events, transport, state model
+├─ awaken-runtime        Resolver, phase engine, loop runner, runtime control
+├─ awaken-server         Routes, mailbox, SSE transport, protocol adapters
+├─ awaken-stores         Memory, file, and PostgreSQL persistence
+├─ awaken-tool-pattern   Glob/regex matching used by extensions
+└─ awaken-ext-*          Optional runtime extensions
 ```
 
 ## Feature flags
@@ -252,6 +319,10 @@ All features enabled by default. Use `default-features = false` to opt out.
 | `generative-ui` | yes | Server-driven UI components |
 | `server` | yes | Multi-protocol HTTP server with mailbox |
 | `full` | yes | All of the above |
+
+Additional workspace extension crates may exist without facade feature flags. Today that includes `awaken-ext-deferred-tools`.
+
+> `awaken-ext-deferred-tools` is a standalone crate not included in the `full` feature. Add it as a direct dependency if you need lazy tool loading.
 
 ## Examples
 
@@ -287,9 +358,11 @@ cd examples/ai-sdk-starter && npm install && npm run dev
 | Resource | Description |
 |---|---|
 | [`docs/book/`](./docs/book/) | User guide — tutorials, how-to, reference, explanation |
-| [`docs/adr/`](./docs/adr/) | 19 Architecture Decision Records |
+| [`docs/adr/`](./docs/adr/) | 22 Architecture Decision Records |
 | [`DEVELOPMENT.md`](./DEVELOPMENT.md) | Build, test, and contribution guide |
 | [`CONTRIBUTING.md`](./CONTRIBUTING.md) | Contributor guidelines |
+
+> The English and Chinese book pages now share the same table of contents. Update both when APIs, routes, or configuration surfaces change.
 
 ## Project status
 

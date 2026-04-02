@@ -68,13 +68,13 @@ This page documents key architectural decisions in Awaken and the tradeoffs they
 
 ## Multi-Protocol Server vs Single Protocol
 
-**Decision**: The server exposes AI SDK v6, AG-UI, A2A, and ACP endpoints simultaneously. Each protocol adapter translates `AgentEvent` into its wire format.
+**Decision**: The server exposes AI SDK v6, AG-UI, A2A, and MCP over HTTP, while ACP exists as a separate stdio protocol module. Each protocol adapter translates `AgentEvent` into its wire format.
 
 **Alternative**: Support a single canonical protocol and require clients to adapt.
 
 | | Multi-Protocol | Single Protocol |
 |---|---|---|
-| Frontend compatibility | Works with AI SDK, CopilotKit, A2A clients out of the box | Requires custom adapter on the client side |
+| Frontend compatibility | Works with AI SDK, CopilotKit, A2A clients, and MCP HTTP clients out of the box | Requires custom adapter on the client side |
 | Maintenance | Each protocol adapter must be kept in sync with `AgentEvent` changes | One adapter to maintain |
 | Testing | Protocol parity tests ensure all adapters handle all events | Less test surface |
 | Complexity | Multiple route sets, encoder types, and event mappings | One route set, one encoder |

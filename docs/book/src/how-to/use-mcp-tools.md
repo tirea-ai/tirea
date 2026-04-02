@@ -53,14 +53,30 @@ for id in registry.ids() {
 }
 ```
 
-4. Register tools with the runtime.
+3. Register tools with the runtime.
 
 ```rust,ignore
 use std::sync::Arc;
-use awaken::{AgentRuntimeBuilder, Plugin};
+use awaken::engine::GenaiExecutor;
 use awaken::ext_mcp::McpPlugin;
+use awaken::registry_spec::{AgentSpec, ModelSpec};
+use awaken::{AgentRuntimeBuilder, Plugin};
+
+let agent_spec = AgentSpec::new("mcp-agent")
+    .with_model("gpt-4o-mini")
+    .with_system_prompt("Use MCP tools when they help answer the user.")
+    .with_hook_filter("mcp");
 
 let mut builder = AgentRuntimeBuilder::new()
+    .with_provider("openai", Arc::new(GenaiExecutor::new()))
+    .with_model(
+        "gpt-4o-mini",
+        ModelSpec {
+            id: "gpt-4o-mini".into(),
+            provider: "openai".into(),
+            model: "gpt-4o-mini".into(),
+        },
+    )
     .with_agent_spec(agent_spec)
     .with_plugin("mcp", Arc::new(McpPlugin) as Arc<dyn Plugin>);
 
@@ -72,7 +88,7 @@ for (id, tool) in registry.snapshot() {
 let runtime = builder.build().expect("failed to build runtime");
 ```
 
-5. Enable periodic refresh (optional).
+4. Enable periodic refresh (optional).
 
    MCP servers may add or remove tools at runtime. Enable periodic refresh to keep the tool registry in sync:
 

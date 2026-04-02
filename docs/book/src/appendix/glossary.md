@@ -5,7 +5,7 @@
 | `Thread` | 会话线程 | Persisted conversation + state history. |
 | `Run` | 运行 | One execution attempt over a thread. |
 | `Phase` | 阶段 | Named step in the execution loop (RunStart, StepStart, BeforeInference, AfterInference, BeforeToolExecute, AfterToolExecute, StepEnd, RunEnd). |
-| `Snapshot` | 快照 | Immutable state snapshot (`Arc<StateMap>`) seen by phase hooks. |
+| `Snapshot` | 快照 | Immutable state snapshot (`struct Snapshot { revision: u64, ext: Arc<StateMap> }`) seen by phase hooks. |
 | `StateKey` | 状态键 | Typed key with scope, merge strategy, and value type. |
 | `MutationBatch` | 变更批次 | Collected state mutations applied atomically after phase convergence. |
 | `AgentRuntime` | 智能体运行时 | Orchestration layer for agent resolution and run execution. |

@@ -9,7 +9,7 @@
 ```mermaid
 flowchart LR
     subgraph Stage1["Stage 1: Lookup"]
-        A1[Fetch AgentSpec] --> A2[Resolve ModelEntry]
+        A1[Fetch AgentSpec] --> A2[Resolve ModelSpec]
         A2 --> A3[Get LlmExecutor]
         A3 --> A4{Retry config?}
         A4 -- yes --> A5[Wrap in RetryingExecutor]
@@ -44,7 +44,7 @@ flowchart LR
 
 1. **AgentSpec** -- 通过 `agent_id` 从 `AgentSpecRegistry` 中查找。如果规格包含 `endpoint` 字段（远程 A2A 智能体），解析会以 `RemoteAgentNotDirectlyRunnable` 失败 -- 远程智能体只能作为委托使用，不能直接运行。
 
-2. **ModelEntry** -- 规格的 `model` 字段（一个字符串 ID，如 `"gpt-4"`）通过 `ModelRegistry` 解析为 `ModelEntry`，将其映射到一个提供者 ID 和实际模型名称（例如，提供者 `"openai"`，模型名称 `"gpt-4-turbo"`）。
+2. **ModelSpec** -- 规格的 `model` 字段（一个字符串 ID，如 `"gpt-4"`）通过 `ModelRegistry` 解析为 `ModelSpec`，将其映射到一个 provider ID 和实际 API 模型名（例如，provider `"openai"`，模型 `"gpt-4o"`）。
 
 3. **LlmExecutor** -- 模型条目中的提供者 ID 通过 `ProviderRegistry` 解析为一个活的 `LlmExecutor` 实例。
 

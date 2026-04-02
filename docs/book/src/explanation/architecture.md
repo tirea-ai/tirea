@@ -1,31 +1,29 @@
 # Architecture
 
-Awaken is organized in three layers. Each layer has a single responsibility and communicates through defined contracts.
+Awaken is organized around one runtime core plus three surrounding surfaces: contract types, server/storage adapters, and optional extensions. The important distinction is not just crate boundaries, but where decisions are made.
 
 ```text
-+-------------------------------------------------------+
-|  Application Layer                                     |
-|  Register tools, define agents, call run_stream        |
-+-------------------------------------------------------+
-                         |
-                         v
-+-------------------------------------------------------+
-|  AgentRuntime                                          |
-|  Resolve agents, execute phases, emit events           |
-+-------------------------------------------------------+
-                         |
-                         v
-+-------------------------------------------------------+
-|  Thread + State Engine                                 |
-|  Thread history, snapshot isolation, state keys        |
-+-------------------------------------------------------+
+Application assembly
+  register tools / models / providers / plugins / AgentSpec
+        |
+        v
+AgentRuntime
+  resolve AgentSpec -> ResolvedAgent
+  build ExecutionEnv from plugins
+  run the phase loop
+  expose cancel / decision control for active runs
+        |
+        v
+Server + storage surfaces
+  HTTP routes, mailbox, SSE replay, protocol adapters,
+  thread/run persistence, profile storage
 ```
 
-**Application layer** -- user code that registers tools, defines `AgentSpec` entries, configures plugins, and starts the runtime. This layer does not touch execution internals.
+**Contract layer** -- `awaken-contract` defines the shared types used everywhere: `AgentSpec`, `ModelSpec`, `ProviderSpec`, `Tool`, `AgentEvent`, transport traits, and the typed state model. This is the vocabulary that the rest of the system speaks.
 
-**AgentRuntime** -- the orchestration layer. It resolves agent IDs to fully wired configurations (`ResolvedAgent`), manages active runs (one per thread), and provides external control via `RunHandle` (cancel, send decisions). The runtime delegates execution to the loop runner.
+**Runtime core** -- `awaken-runtime` is the orchestration layer. It resolves agent IDs to fully wired configurations (`ResolvedAgent`), builds an `ExecutionEnv` from plugins, manages active runs, and delegates execution to the loop runner plus phase engine.
 
-**Thread + State Engine** -- the persistence and state isolation layer. Thread history is append-only. All state access uses snapshot isolation: phase hooks see an immutable `Snapshot`, collect mutations in a `MutationBatch`, and apply them atomically after phase convergence.
+**Server and persistence surfaces** -- `awaken-server` turns the runtime into HTTP and SSE endpoints, mailbox-backed background execution, and protocol adapters. `awaken-stores` provides concrete persistence backends for threads and runs. `awaken-ext-*` crates extend the runtime at phase and tool boundaries without changing the core loop.
 
 ## Request Sequence
 
@@ -81,6 +79,28 @@ The step loop repeats until one of these conditions fires:
 - An error occurs (`Error`).
 
 At each phase boundary, the loop checks the cancellation token and the run lifecycle state before proceeding.
+
+## Repository Map
+
+```text
+awaken
+├─ awaken-contract
+│  ├─ registry specs
+│  ├─ tool / executor / event / transport contracts
+│  └─ state model
+├─ awaken-runtime
+│  ├─ builder + registries + resolve pipeline
+│  ├─ AgentRuntime control plane
+│  ├─ loop_runner + phase engine
+│  ├─ execution / context / policies / profile
+│  └─ runtime extensions (handoff, local A2A, background)
+├─ awaken-server
+│  ├─ routes + config API + mailbox + services
+│  ├─ protocols: ai_sdk_v6 / ag_ui / a2a / mcp / acp-stdio
+│  └─ transport: SSE relay / replay buffer / transcoder
+├─ awaken-stores
+└─ awaken-ext-*
+```
 
 ## Design Intent
 

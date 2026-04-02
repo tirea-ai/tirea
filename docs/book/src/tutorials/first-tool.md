@@ -55,7 +55,6 @@ Key choices:
 The tool reads the current count via `ctx.state::<GreetCount>()` and returns a personalized greeting.
 
 ```rust,ignore
-use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolOutput, ToolError, ToolCallContext};
@@ -104,7 +103,9 @@ impl Tool for GreetTool {
 ## 3. Register the Tool
 
 ```rust,ignore
-use awaken::registry_spec::AgentSpec;
+use std::sync::Arc;
+use awaken::engine::GenaiExecutor;
+use awaken::registry_spec::{AgentSpec, ModelSpec};
 use awaken::AgentRuntimeBuilder;
 
 let agent_spec = AgentSpec::new("assistant")
@@ -113,6 +114,15 @@ let agent_spec = AgentSpec::new("assistant")
     .with_max_rounds(5);
 
 let runtime = AgentRuntimeBuilder::new()
+    .with_provider("openai", Arc::new(GenaiExecutor::new()))
+    .with_model(
+        "gpt-4o-mini",
+        ModelSpec {
+            id: "gpt-4o-mini".into(),
+            provider: "openai".into(),
+            model: "gpt-4o-mini".into(),
+        },
+    )
     .with_agent_spec(agent_spec)
     .with_tool("greet", Arc::new(GreetTool))
     .build()?;
@@ -179,8 +189,3 @@ The `StateKey` trait gives you type-safe, scoped state without raw JSON manipula
 - `ToolError::InvalidArguments` not surfaced: `validate_args` is called before `execute` by the runtime. If you skip validation, bad input reaches `execute` and may panic on `.unwrap()`.
 - Scope mismatch: `KeyScope::Run` state is cleared between runs. If you expect persistence, use `KeyScope::Thread`.
 
-## Next
-
-- [Tool Trait](../reference/tool-trait.md)
-- [Add a Plugin](../how-to/add-a-plugin.md)
-- [State Keys](../reference/state-keys.md)

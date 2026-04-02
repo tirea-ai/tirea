@@ -9,7 +9,7 @@ Resolution is a pure function: `(RegistrySet, agent_id) -> ResolvedAgent`. It pr
 ```mermaid
 flowchart LR
     subgraph Stage1["Stage 1: Lookup"]
-        A1[Fetch AgentSpec] --> A2[Resolve ModelEntry]
+        A1[Fetch AgentSpec] --> A2[Resolve ModelSpec]
         A2 --> A3[Get LlmExecutor]
         A3 --> A4{Retry config?}
         A4 -- yes --> A5[Wrap in RetryingExecutor]
@@ -44,7 +44,7 @@ The first stage fetches the raw data from registries:
 
 1. **AgentSpec** -- looked up from `AgentSpecRegistry` by `agent_id`. If the spec has an `endpoint` field (remote A2A agent), resolution fails with `RemoteAgentNotDirectlyRunnable` -- remote agents can only be used as delegates, not run directly.
 
-2. **ModelEntry** -- the spec's `model` field (a string ID like `"gpt-4"`) is resolved through `ModelRegistry` into a `ModelEntry`, which maps it to a provider ID and an actual model name (e.g., provider `"openai"`, model name `"gpt-4-turbo"`).
+2. **ModelSpec** -- the spec's `model` field (a string ID like `"gpt-4"`) is resolved through `ModelRegistry` into a `ModelSpec`, which maps it to a provider ID and an actual API model name (for example, provider `"openai"`, model `"gpt-4o"`).
 
 3. **LlmExecutor** -- the provider ID from the model entry is resolved through `ProviderRegistry` to get a live `LlmExecutor` instance.
 

@@ -89,12 +89,28 @@ let registry = Arc::new(InMemorySkillRegistry::from_skills(vec![Arc::new(skill)]
 
 ```rust,ignore
 use std::sync::Arc;
-use awaken::{AgentRuntimeBuilder, Plugin};
+use awaken::engine::GenaiExecutor;
 use awaken::ext_skills::SkillSubsystem;
+use awaken::registry_spec::{AgentSpec, ModelSpec};
+use awaken::{AgentRuntimeBuilder, Plugin};
 
 let subsystem = SkillSubsystem::new(registry);
+let agent_spec = AgentSpec::new("skills-agent")
+    .with_model("gpt-4o-mini")
+    .with_system_prompt("Discover and activate skills when specialized help is useful.")
+    .with_hook_filter("skills-discovery")
+    .with_hook_filter("skills-active-instructions");
 
 let runtime = AgentRuntimeBuilder::new()
+    .with_provider("openai", Arc::new(GenaiExecutor::new()))
+    .with_model(
+        "gpt-4o-mini",
+        ModelSpec {
+            id: "gpt-4o-mini".into(),
+            provider: "openai".into(),
+            model: "gpt-4o-mini".into(),
+        },
+    )
     .with_agent_spec(agent_spec)
     .with_plugin(
         "skills-discovery",
