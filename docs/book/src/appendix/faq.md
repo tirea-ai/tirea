@@ -33,3 +33,35 @@ Return `ToolResult::Error` from your tool's `execute` method. The runtime writes
 ## Can tools run in parallel?
 
 Yes. Configure `ToolExecutionMode` in the agent spec. When set to parallel mode, the runtime executes independent tool calls concurrently. Results are collected and merged before proceeding to the next inference step.
+
+## How do I debug a run that is stuck?
+
+Check `RunStatus` in state (`__run` key). If `Waiting`, look at `__suspended_tool_calls` for pending decisions. If `Running`, check if max_rounds or timeout was hit. Enable observability plugin to get per-phase tracing.
+
+## How do I test without a real LLM?
+
+Implement `LlmExecutor` with canned responses. See [Testing Strategy](../how-to/testing-strategy.md) for patterns.
+
+## What happens when parallel tools write to the same state key?
+
+If the key uses `MergeStrategy::Exclusive`, the merge fails and hooks fall back to serial execution. Use `MergeStrategy::Commutative` for keys that support concurrent writes. See [State and Snapshot Model](../explanation/state-and-snapshot-model.md).
+
+## How do request transforms work?
+
+Plugins register `InferenceRequestTransform` via the registrar. Transforms modify the inference request (system prompt, tools, parameters) before it reaches the LLM. Only active plugins' transforms apply. See [Plugin Internals](../explanation/plugin-internals.md).
+
+## Can I write a custom storage backend?
+
+Yes. Implement `ThreadRunStore` (for state persistence) and optionally `MailboxStore` (for HITL). See trait definitions in `awaken-stores`. File and PostgreSQL implementations serve as references.
+
+## How does context compaction work?
+
+When `autocompact` is enabled in `ContextWindowPolicy`, the `CompactionPlugin` monitors token usage. When the context exceeds `max_context_tokens`, it finds a safe compaction boundary (where all tool call/result pairs are complete), summarizes older messages via LLM, and replaces them with a `<conversation-summary>` message. See [Optimize Context Window](../how-to/optimize-context-window.md).
+
+## How do I choose between AI SDK v6, AG-UI, and A2A protocols?
+
+- **AI SDK v6**: Best for React frontends using Vercel AI SDK. Supports text streaming, tool calls, and state snapshots.
+- **AG-UI**: Best for CopilotKit frontends. Supports generative UI components and agent collaboration.
+- **A2A**: Best for agent-to-agent communication. Used for delegate agents and inter-service orchestration.
+
+All three run over HTTP/SSE. Choose based on your frontend framework.

@@ -37,7 +37,7 @@ The plugin registers a tool called `render_a2ui` that the LLM can invoke. When t
 
 2. Understand the A2UI protocol.
 
-   A2UI v0.9 defines four message types. Each message is a JSON object with `"version": "v0.9"` and exactly one of the following keys:
+   A2UI v0.8 defines four message types. Each message is a JSON object with `"version": "v0.8"` and exactly one of the following keys:
 
 | Message Type | Purpose |
 |-------------|---------|
@@ -57,7 +57,7 @@ Messages must be sent in order: create the surface first, then define components
 let messages = serde_json::json!({
     "messages": [
         {
-            "version": "v0.9",
+            "version": "v0.8",
             "createSurface": {
                 "surfaceId": "order-form-1",
                 "catalogId": "my-catalog"
@@ -77,7 +77,7 @@ The `catalogId` tells the frontend which set of component definitions to use for
 let messages = serde_json::json!({
     "messages": [
         {
-            "version": "v0.9",
+            "version": "v0.8",
             "updateComponents": {
                 "surfaceId": "order-form-1",
                 "components": [
@@ -134,7 +134,7 @@ Rules for the component list:
 let messages = serde_json::json!({
     "messages": [
         {
-            "version": "v0.9",
+            "version": "v0.8",
             "updateDataModel": {
                 "surfaceId": "order-form-1",
                 "path": "/",
@@ -159,7 +159,7 @@ The `path` field specifies which part of the data model to update. Use `"/"` to 
 let messages = serde_json::json!({
     "messages": [
         {
-            "version": "v0.9",
+            "version": "v0.8",
             "deleteSurface": {
                 "surfaceId": "order-form-1"
             }
@@ -176,11 +176,11 @@ let messages = serde_json::json!({
 let messages = serde_json::json!({
     "messages": [
         {
-            "version": "v0.9",
+            "version": "v0.8",
             "createSurface": { "surfaceId": "s1", "catalogId": "my-catalog" }
         },
         {
-            "version": "v0.9",
+            "version": "v0.8",
             "updateComponents": {
                 "surfaceId": "s1",
                 "components": [
@@ -189,7 +189,7 @@ let messages = serde_json::json!({
             }
         },
         {
-            "version": "v0.9",
+            "version": "v0.8",
             "updateDataModel": { "surfaceId": "s1", "path": "/", "value": {} }
         }
     ]
@@ -226,7 +226,7 @@ let plugin = A2uiPlugin::with_custom_instructions(
 |---------|-------|-----|
 | `missing required field "messages"` | Tool called without a `messages` array | Ensure the LLM sends `{"messages": [...]}` |
 | `messages array must not be empty` | Empty messages array | Include at least one A2UI message |
-| `unsupported version` | Version field is not `"v0.9"` | Set `"version": "v0.9"` on every message |
+| `unsupported version` | Version field is not `"v0.8"` | Set `"version": "v0.8"` on every message |
 | `multiple message types in one object` | A single message contains more than one type key | Each message object must have exactly one of `createSurface`, `updateComponents`, `updateDataModel`, or `deleteSurface` |
 | `components[N].id is required` | A component in `updateComponents` is missing `id` | Add `"id"` to every component object |
 | `components[N].component is required` | A component is missing the type name | Add `"component"` with a valid catalog type |

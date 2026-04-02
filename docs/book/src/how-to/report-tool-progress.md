@@ -16,7 +16,7 @@ Use this when you need to stream progress updates or activity snapshots from a t
    `AgentEvent::ActivitySnapshot` with `activity_type = "tool-call-progress"`.
 
 ```rust,ignore
-use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult};
+use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult, ToolOutput};
 use awaken::contract::progress::ProgressStatus;
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -29,7 +29,7 @@ impl Tool for IndexTool {
         ToolDescriptor::new("index_docs", "Index Docs", "Index a document set")
     }
 
-    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         ctx.report_progress(ProgressStatus::Running, Some("Starting indexing"), None).await;
 
         for i in 0..10 {
@@ -43,7 +43,7 @@ impl Tool for IndexTool {
         }
 
         ctx.report_progress(ProgressStatus::Done, Some("Indexing complete"), Some(1.0)).await;
-        Ok(ToolResult::success("index_docs", json!({"indexed": 10})))
+        Ok(ToolResult::success("index_docs", json!({"indexed": 10})).into())
     }
 }
 ```

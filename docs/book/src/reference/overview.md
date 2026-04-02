@@ -35,6 +35,7 @@ so that downstream code only needs a single dependency.
 | `awaken::ext_mcp` | `mcp` | `awaken-ext-mcp` |
 | `awaken::ext_skills` | `skills` | `awaken-ext-skills` |
 | `awaken::ext_generative_ui` | `generative-ui` | `awaken-ext-generative-ui` |
+| `awaken::ext_reminder` | `reminder` | `awaken-ext-reminder` |
 | `awaken::server` | `server` | `awaken-server` |
 
 ## Root-level re-exports
@@ -61,13 +62,15 @@ The following types are re-exported at the crate root for convenience:
 |---|---|---|
 | `permission` | yes | Tool-level permission gating (HITL) |
 | `observability` | yes | Tracing and metrics integration |
-| `mcp` | no | MCP (Model Context Protocol) tool bridge |
-| `skills` | no | Skills subsystem for reusable agent capabilities |
-| `server` | no | HTTP server with SSE streaming and protocol adapters |
-| `generative-ui` | no | Generative UI component streaming |
-| `full` | no | Enables all of the above |
+| `mcp` | yes | MCP (Model Context Protocol) tool bridge |
+| `skills` | yes | Skills subsystem for reusable agent capabilities |
+| `reminder` | yes | Reminder extension for injecting context messages |
+| `server` | yes | HTTP server with SSE streaming and protocol adapters |
+| `generative-ui` | yes | Generative UI component streaming |
+| `full` | yes | Enables all of the above |
 
 ## Related
 
 - [Introduction](../introduction.md)
 - [Scheduled Actions](scheduled-actions.md)
+- [Effects](effects.md)

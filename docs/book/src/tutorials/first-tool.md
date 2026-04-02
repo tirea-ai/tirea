@@ -58,7 +58,7 @@ The tool reads the current count via `ctx.state::<GreetCount>()` and returns a p
 use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolError, ToolCallContext};
+use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolOutput, ToolError, ToolCallContext};
 
 struct GreetTool;
 
@@ -87,7 +87,7 @@ impl Tool for GreetTool {
         &self,
         args: Value,
         ctx: &ToolCallContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutput, ToolError> {
         let name = args["name"].as_str().unwrap_or("world");
 
         // Read state -- returns None if the key has not been set yet.
@@ -96,7 +96,7 @@ impl Tool for GreetTool {
         Ok(ToolResult::success("greet", json!({
             "greeting": format!("Hello, {}!", name),
             "times_greeted": count,
-        })))
+        })).into())
     }
 }
 ```

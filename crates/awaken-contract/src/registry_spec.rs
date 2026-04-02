@@ -12,7 +12,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::contract::inference::ContextWindowPolicy;
+use crate::contract::inference::{ContextWindowPolicy, ReasoningEffort};
 use crate::error::StateError;
 
 // ---------------------------------------------------------------------------
@@ -73,6 +73,10 @@ pub struct AgentSpec {
     /// Context window management policy. `None` disables compaction and truncation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_policy: Option<ContextWindowPolicy>,
+    /// Default reasoning effort for this agent. `None` means no thinking/reasoning.
+    /// Can be overridden per-run via `InferenceOverride` or per-step via plugins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
     /// PluginRegistry IDs — resolved at build time.
     #[serde(default)]
     pub plugin_ids: Vec<String>,
@@ -153,6 +157,7 @@ impl Default for AgentSpec {
             max_rounds: default_max_rounds(),
             max_continuation_retries: default_max_continuation_retries(),
             context_policy: None,
+            reasoning_effort: None,
             plugin_ids: Vec::new(),
             active_hook_filter: HashSet::new(),
             allowed_tools: None,
@@ -241,6 +246,12 @@ impl AgentSpec {
     #[must_use]
     pub fn with_max_rounds(mut self, n: usize) -> Self {
         self.max_rounds = n;
+        self
+    }
+
+    #[must_use]
+    pub fn with_reasoning_effort(mut self, effort: ReasoningEffort) -> Self {
+        self.reasoning_effort = Some(effort);
         self
     }
 

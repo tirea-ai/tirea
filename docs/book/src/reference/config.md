@@ -272,6 +272,88 @@ pub struct CircuitBreakerConfig {
 | `server` | Builds the HTTP server with SSE streaming and protocol adapters |
 | `generative-ui` | Enables generative UI component streaming to frontends |
 
+## Custom plugin configuration
+
+Plugins declare typed configuration sections using the `PluginConfigKey` trait,
+which binds a string key to a Rust struct at compile time:
+
+```rust,ignore
+pub trait PluginConfigKey: 'static + Send + Sync {
+    const KEY: &'static str;               // section name in AgentSpec.sections
+    type Config: Default + Clone + Serialize + DeserializeOwned
+        + schemars::JsonSchema + Send + Sync + 'static;
+}
+```
+
+### Declaring schemas for validation
+
+Plugins override `config_schemas()` to return JSON Schemas generated from
+their config structs. The resolve pipeline (Stage 2) validates every
+`AgentSpec.sections` entry against these schemas before any hook runs.
+
+```rust,ignore
+fn config_schemas(&self) -> Vec<ConfigSchema> {
+    vec![ConfigSchema {
+        key: RateLimitConfigKey::KEY,
+        json_schema: schemars::schema_for!(RateLimitConfig),
+    }]
+}
+```
+
+### Reading config at runtime
+
+Plugins read their typed config via `agent_spec.config::<K>()`. If the section
+is absent, the `Default` impl is returned.
+
+```rust,ignore
+let cfg = ctx.agent_spec().config::<RateLimitConfigKey>()?;
+```
+
+### Worked example
+
+```rust,ignore
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use awaken::PluginConfigKey;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct RateLimitConfig {
+    pub max_calls_per_step: u32,   // default: 0 (unlimited)
+    pub cooldown_ms: u64,          // default: 0
+}
+
+pub struct RateLimitConfigKey;
+
+impl PluginConfigKey for RateLimitConfigKey {
+    const KEY: &'static str = "rate_limit";
+    type Config = RateLimitConfig;
+}
+
+// In plugin register():
+fn register(&self, r: &mut PluginRegistrar) -> Result<(), StateError> {
+    r.register_hook(Phase::BeforeToolExecute, RateLimitHook);
+    Ok(())
+}
+
+fn config_schemas(&self) -> Vec<ConfigSchema> {
+    vec![ConfigSchema {
+        key: RateLimitConfigKey::KEY,
+        json_schema: schemars::schema_for!(RateLimitConfig),
+    }]
+}
+
+// In a hook:
+let cfg = ctx.agent_spec().config::<RateLimitConfigKey>()?;
+if cfg.max_calls_per_step > 0 { /* enforce limit */ }
+```
+
+### Validation behavior
+
+- **Section present but invalid:** resolve fails with a schema validation error.
+- **Section present but unclaimed:** a warning is logged (possible typo or
+  removed plugin).
+- **Section absent:** allowed; the plugin receives `Config::default()`.
+
 ## Related
 
 - [Build an Agent](../how-to/build-an-agent.md)

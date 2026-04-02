@@ -238,8 +238,22 @@ async fn run_before_inference(
     clear_patch.update::<InferenceOverrideState>(InferenceOverrideStateAction::Clear);
     store.commit(clear_patch)?;
 
-    // Merge override state with run-level overrides
-    let mut overrides = ctx.run_overrides.clone();
+    // Build override chain: AgentSpec default < run-level < per-step plugin
+    let mut overrides: Option<InferenceOverride> =
+        ctx.agent
+            .spec
+            .reasoning_effort
+            .as_ref()
+            .map(|effort| InferenceOverride {
+                reasoning_effort: Some(effort.clone()),
+                ..Default::default()
+            });
+    if let Some(run_ovr) = ctx.run_overrides.clone() {
+        match overrides.as_mut() {
+            Some(o) => o.merge(run_ovr),
+            None => overrides = Some(run_ovr),
+        }
+    }
     if let Some(step_override) = override_state.overrides {
         merge_override_payloads(&mut overrides, vec![step_override]);
     }

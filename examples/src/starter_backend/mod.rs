@@ -91,6 +91,10 @@ pub struct StarterBackendArgs {
 
     #[arg(long, env = "A2A_BEARER_TOKEN")]
     pub a2a_bearer_token: Option<String>,
+
+    /// Reasoning effort level: none, low, medium, high, max, or a numeric budget.
+    #[arg(long, env = "AGENT_REASONING_EFFORT")]
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -253,6 +257,22 @@ Deterministic compatibility directives:\n\
         args.system_prompt
     );
 
+    // Parse reasoning effort from CLI/env
+    let reasoning_effort = args.reasoning_effort.as_deref().and_then(|s| {
+        use awaken_contract::contract::inference::ReasoningEffort;
+        match s.to_lowercase().as_str() {
+            "none" => Some(ReasoningEffort::None),
+            "low" => Some(ReasoningEffort::Low),
+            "medium" => Some(ReasoningEffort::Medium),
+            "high" => Some(ReasoningEffort::High),
+            "max" => Some(ReasoningEffort::Max),
+            other => other.parse::<u32>().ok().map(ReasoningEffort::Budget),
+        }
+    });
+    if let Some(ref effort) = reasoning_effort {
+        tracing::info!(?effort, "reasoning effort configured for agents");
+    }
+
     let default_id = if args.agent_id.trim().is_empty() {
         "default".to_string()
     } else {
@@ -266,6 +286,7 @@ Deterministic compatibility directives:\n\
         model: "default".into(),
         system_prompt: base_prompt.clone(),
         max_rounds: 3,
+        reasoning_effort: reasoning_effort.clone(),
         plugin_ids: vec!["frontend_tools".into(), "observability".into()],
         ..Default::default()
     };
@@ -357,6 +378,15 @@ Deterministic compatibility directives:\n\
         system_prompt: "You are a test assistant. Respond briefly to every message.".into(),
         max_rounds: 1,
         plugin_ids: vec!["permission".into()],
+        ..Default::default()
+    };
+    // Minimal agent: no tools, no plugins, short prompt — for reasoning/thinking verification.
+    let thinking_agent = AgentSpec {
+        id: "thinking".into(),
+        model: "default".into(),
+        system_prompt: "You are a helpful assistant. Be concise.".into(),
+        max_rounds: 1,
+        reasoning_effort: reasoning_effort.clone(),
         ..Default::default()
     };
     let a2a_agent = AgentSpec {
@@ -655,6 +685,9 @@ Deterministic compatibility directives:\n\
     }
     if default_id != "limited" {
         builder = builder.with_agent_spec(limited_agent);
+    }
+    if default_id != "thinking" {
+        builder = builder.with_agent_spec(thinking_agent);
     }
     if default_id != "a2a" {
         builder = builder.with_agent_spec(a2a_agent);

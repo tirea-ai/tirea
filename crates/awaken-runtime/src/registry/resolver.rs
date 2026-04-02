@@ -47,6 +47,7 @@ impl ResolvedAgent {
             max_rounds: 16,
             max_continuation_retries: 2,
             context_policy: None,
+            reasoning_effort: None,
             plugin_ids: Vec::new(),
             active_hook_filter: Default::default(),
             allowed_tools: None,

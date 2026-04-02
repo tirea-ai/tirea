@@ -259,3 +259,48 @@ Other plugins and tools can then schedule your action:
 ```rust,ignore
 cmd.schedule_action::<MyCustomAction>(my_payload)?;
 ```
+
+---
+
+## Convergence and cascading
+
+Scheduled actions execute within the phase convergence loop. After each round
+of action dispatch, the runtime checks whether new actions were produced. If
+so, the loop repeats to process them.
+
+### How the loop works
+
+```text
+Phase EXECUTE stage:
+  round 1: dispatch queued actions -> handlers return StateCommands
+           commit state, collect newly scheduled actions
+  round 2: dispatch new actions    -> handlers may schedule more
+           ...
+  round N: no new actions          -> phase converges, loop exits
+```
+
+An action handler can schedule new actions for the **same phase**, which
+causes another round. This enables cascading behaviors (e.g., a handler adds
+a context message, which triggers a filter action from another plugin).
+
+### Limits
+
+The loop is bounded by `DEFAULT_MAX_PHASE_ROUNDS` (16). If actions are still
+being produced after 16 rounds, the runtime returns a
+`StateError::PhaseRunLoopExceeded` error with the phase name and round count.
+This prevents infinite loops from misconfigured or recursive handlers.
+
+### Failed actions
+
+When an action handler returns an error, the action is not retried. Instead,
+it is recorded in the `FailedScheduledActions` state key, which holds a list
+of `FailedScheduledAction` entries (action key, payload, and error message).
+Plugins or tests can inspect this key to detect handler failures.
+
+```rust,ignore
+let failed = store.read::<FailedScheduledActions>().unwrap_or_default();
+assert!(failed.is_empty(), "expected no failed actions");
+```
+
+See [Plugin Internals](../explanation/plugin-internals.md) for the full
+convergence loop description and phase execution model.

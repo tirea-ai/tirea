@@ -30,7 +30,7 @@ export DEEPSEEK_API_KEY=<your-key>
 use std::sync::Arc;
 use serde_json::{json, Value};
 use async_trait::async_trait;
-use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolError, ToolCallContext};
+use awaken::contract::tool::{Tool, ToolDescriptor, ToolResult, ToolOutput, ToolError, ToolCallContext};
 use awaken::contract::message::Message;
 use awaken::contract::event::AgentEvent;
 use awaken::contract::event_sink::VecEventSink;
@@ -56,9 +56,9 @@ impl Tool for EchoTool {
         &self,
         args: Value,
         _ctx: &ToolCallContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutput, ToolError> {
         let text = args["text"].as_str().unwrap_or_default();
-        Ok(ToolResult::success("echo", json!({ "echoed": text })))
+        Ok(ToolResult::success("echo", json!({ "echoed": text })).into())
     }
 }
 

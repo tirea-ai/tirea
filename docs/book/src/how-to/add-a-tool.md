@@ -14,7 +14,7 @@ Use this when you need to expose a custom capability to the agent by implementin
 ```rust,ignore
 use async_trait::async_trait;
 use serde_json::{Value, json};
-use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult};
+use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult, ToolOutput};
 
 pub struct WeatherTool;
 
@@ -34,14 +34,14 @@ impl Tool for WeatherTool {
             }))
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext) -> Result<ToolOutput, ToolError> {
         let city = args["city"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'city'".into()))?;
 
         let weather = fetch_weather(city).await?;
 
-        Ok(ToolResult::success("get_weather", json!({ "forecast": weather })))
+        Ok(ToolResult::success("get_weather", json!({ "forecast": weather })).into())
     }
 }
 ```

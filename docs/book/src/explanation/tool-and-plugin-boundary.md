@@ -10,7 +10,7 @@ A tool is a capability exposed to the LLM. The LLM decides when to call it based
 pub trait Tool: Send + Sync {
     fn descriptor(&self) -> ToolDescriptor;
     fn validate_args(&self, args: &Value) -> Result<(), ToolError> { Ok(()) }
-    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolResult, ToolError>;
+    async fn execute(&self, args: Value, ctx: &ToolCallContext) -> Result<ToolOutput, ToolError>;
 }
 ```
 

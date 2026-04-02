@@ -9,7 +9,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use awaken_contract::contract::executor::{InferenceExecutionError, InferenceRequest, LlmExecutor};
+use awaken_contract::contract::executor::{
+    InferenceExecutionError, InferenceRequest, InferenceStream, LlmExecutor,
+};
 use awaken_contract::contract::inference::StreamResult;
 
 use super::circuit_breaker::CircuitBreaker;
@@ -203,6 +205,19 @@ impl LlmExecutor for RetryingExecutor {
         }
 
         Err(last_error.expect("at least one fallback was attempted"))
+    }
+
+    fn execute_stream(
+        &self,
+        request: InferenceRequest,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<InferenceStream, InferenceExecutionError>>
+                + Send
+                + '_,
+        >,
+    > {
+        self.inner.execute_stream(request)
     }
 
     fn name(&self) -> &str {

@@ -5,6 +5,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::StreamExt;
 use genai::Client;
+use genai::chat::ReasoningEffort as GenaiReasoningEffort;
 use genai::chat::{ChatOptions, ChatStreamEvent};
 use reqwest::StatusCode;
 
@@ -12,13 +13,27 @@ use awaken_contract::contract::content::ContentBlock;
 use awaken_contract::contract::executor::{
     InferenceExecutionError, InferenceRequest, InferenceStream, LlmExecutor, LlmStreamEvent,
 };
-use awaken_contract::contract::inference::{StopReason, StreamResult};
+use awaken_contract::contract::inference::{
+    ReasoningEffort as ContractReasoningEffort, StopReason, StreamResult,
+};
 
 use super::convert::{build_chat_request, from_genai_tool_call, map_stop_reason, map_usage};
 use super::streaming::{StreamCollector, StreamOutput};
 
 /// Default timeout for LLM inference calls (120 seconds).
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Map awaken-contract reasoning effort to genai reasoning effort.
+fn map_reasoning_effort(effort: &ContractReasoningEffort) -> GenaiReasoningEffort {
+    match effort {
+        ContractReasoningEffort::None => GenaiReasoningEffort::None,
+        ContractReasoningEffort::Low => GenaiReasoningEffort::Low,
+        ContractReasoningEffort::Medium => GenaiReasoningEffort::Medium,
+        ContractReasoningEffort::High => GenaiReasoningEffort::High,
+        ContractReasoningEffort::Max => GenaiReasoningEffort::Max,
+        ContractReasoningEffort::Budget(n) => GenaiReasoningEffort::Budget(*n),
+    }
+}
 
 /// LLM executor backed by the `genai` crate.
 ///
@@ -85,6 +100,10 @@ impl GenaiExecutor {
             }
             if let Some(top_p) = ovr.top_p {
                 opts = opts.with_top_p(top_p);
+            }
+            if let Some(ref effort) = ovr.reasoning_effort {
+                opts = opts.with_reasoning_effort(map_reasoning_effort(effort));
+                opts = opts.with_capture_reasoning_content(true);
             }
         }
 
@@ -467,6 +486,62 @@ mod tests {
         assert_eq!(opts.max_tokens, Some(512));
         // Capture flags still applied.
         assert_eq!(opts.capture_usage, Some(true));
+    }
+
+    #[test]
+    fn build_options_with_reasoning_effort() {
+        let exec = GenaiExecutor::new();
+        let req = make_request(Some(InferenceOverride {
+            reasoning_effort: Some(ContractReasoningEffort::High),
+            ..Default::default()
+        }));
+        let opts = exec.build_options(&req);
+
+        assert!(
+            opts.reasoning_effort.is_some(),
+            "reasoning_effort should be set"
+        );
+        assert_eq!(opts.capture_reasoning_content, Some(true));
+    }
+
+    #[test]
+    fn build_options_without_reasoning_effort() {
+        let exec = GenaiExecutor::new();
+        let req = make_request(None);
+        let opts = exec.build_options(&req);
+
+        assert!(opts.reasoning_effort.is_none());
+        assert!(opts.capture_reasoning_content.is_none());
+    }
+
+    #[test]
+    fn map_reasoning_effort_all_variants() {
+        use super::map_reasoning_effort;
+
+        assert!(matches!(
+            map_reasoning_effort(&ContractReasoningEffort::None),
+            GenaiReasoningEffort::None
+        ));
+        assert!(matches!(
+            map_reasoning_effort(&ContractReasoningEffort::Low),
+            GenaiReasoningEffort::Low
+        ));
+        assert!(matches!(
+            map_reasoning_effort(&ContractReasoningEffort::Medium),
+            GenaiReasoningEffort::Medium
+        ));
+        assert!(matches!(
+            map_reasoning_effort(&ContractReasoningEffort::High),
+            GenaiReasoningEffort::High
+        ));
+        assert!(matches!(
+            map_reasoning_effort(&ContractReasoningEffort::Max),
+            GenaiReasoningEffort::Max
+        ));
+        assert!(matches!(
+            map_reasoning_effort(&ContractReasoningEffort::Budget(4096)),
+            GenaiReasoningEffort::Budget(4096)
+        ));
     }
 
     // -- map_error tests --

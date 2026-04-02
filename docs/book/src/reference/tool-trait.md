@@ -2,7 +2,7 @@
 
 The `Tool` trait is the primary extension point for giving agents capabilities.
 Tools are stateless functions that receive JSON arguments and a read-only context,
-and return a `ToolResult`.
+and return a `ToolOutput`.
 
 ## Trait definition
 
@@ -22,7 +22,7 @@ pub trait Tool: Send + Sync {
         &self,
         args: Value,
         ctx: &ToolCallContext,
-    ) -> Result<ToolResult, ToolError>;
+    ) -> Result<ToolOutput, ToolError>;
 }
 ```
 
@@ -151,7 +151,7 @@ async fn report_progress(
 
 ```rust,ignore
 use async_trait::async_trait;
-use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult};
+use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult, ToolOutput};
 use serde_json::{Value, json};
 
 struct Greet;
@@ -173,11 +173,11 @@ impl Tool for Greet {
         &self,
         args: Value,
         _ctx: &ToolCallContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutput, ToolError> {
         let name = args["name"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("name required".into()))?;
-        Ok(ToolResult::success("greet", json!({ "greeting": format!("Hello, {name}!") })))
+        Ok(ToolResult::success("greet", json!({ "greeting": format!("Hello, {name}!") })).into())
     }
 }
 ```
@@ -186,7 +186,7 @@ impl Tool for Greet {
 
 ```rust,ignore
 use async_trait::async_trait;
-use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult};
+use awaken::contract::tool::{Tool, ToolCallContext, ToolDescriptor, ToolError, ToolResult, ToolOutput};
 use awaken::state::StateKey;
 use serde::{Serialize, Deserialize};
 use serde_json::{Value, json};
@@ -207,14 +207,67 @@ impl Tool for GetPreferences {
         &self,
         _args: Value,
         ctx: &ToolCallContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutput, ToolError> {
         // Read typed state through the snapshot
         // let prefs = ctx.state::<UserPreferences>().cloned().unwrap_or_default();
-        // Ok(ToolResult::success("get_prefs", serde_json::to_value(&prefs).unwrap()))
-        Ok(ToolResult::success("get_prefs", json!({})))
+        // Ok(ToolResult::success("get_prefs", serde_json::to_value(&prefs).unwrap()).into())
+        Ok(ToolResult::success("get_prefs", json!({})).into())
     }
 }
 ```
+
+## Tool execution hooks
+
+Every tool call passes through plugin hooks before and after execution. This
+allows plugins to intercept, observe, or modify tool call behavior without
+changing the tool itself.
+
+### Full lifecycle
+
+```text
+LLM selects tool
+  -> validate_args()
+  -> BeforeToolExecute phase (plugins run hooks)
+     Plugins may schedule ToolInterceptAction:
+       Block    -> run terminates with reason
+       Suspend  -> run pauses (HITL), tool not executed
+       SetResult -> tool skipped, pre-built result used
+  -> execute()                (only if not intercepted)
+  -> AfterToolExecute phase   (plugins run hooks)
+     Plugins observe the ToolResult and may modify state
+```
+
+### BeforeToolExecute
+
+Runs once per tool call, after argument validation. Plugins receive a
+`PhaseContext` containing the tool name, call ID, and validated arguments.
+Hooks return a `StateCommand` that may schedule `ToolInterceptAction` to
+block, suspend, or short-circuit the call.
+
+When multiple intercepts are scheduled, priority is:
+**Block > Suspend > SetResult**.
+
+### AfterToolExecute
+
+Runs after `execute()` completes (or after an intercept produces a result).
+Plugins receive the `PhaseContext` with the `ToolResult` attached. Hooks can
+update state, emit events, or schedule actions for subsequent phases.
+
+### ToolCallStatus transitions
+
+Each tool call tracks a `ToolCallStatus` through its lifecycle:
+
+```text
+New -> Running -> Succeeded
+                  Failed
+                  Suspended -> Resuming -> Running -> ...
+                  Cancelled
+```
+
+Terminal states (`Succeeded`, `Failed`, `Cancelled`) cannot transition further.
+
+See [Plugin Internals](../explanation/plugin-internals.md) for intercept
+priority details and the full phase convergence loop.
 
 ## Related
 

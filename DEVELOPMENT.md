@@ -106,12 +106,12 @@ Hooks are defined in `lefthook.yml` and run automatically:
 ### Commit message examples
 
 ```
-feat(runtime): add phase timeout support
-fix(server): handle SSE disconnect during streaming
-refactor(contract): extract state key validation
-docs(adr): add ADR-0019 mailbox architecture
-test(permission): add deny policy edge cases
-chore(deps): update genai to 0.6.0-beta.10
+✨ feat(runtime): add phase timeout support
+🐛 fix(server): handle SSE disconnect during streaming
+♻️ refactor(contract): extract state key validation
+📖 docs(adr): add ADR-0019 mailbox architecture
+🧪 test(permission): add deny policy edge cases
+🔧 chore(deps): update genai to 0.6.0-beta.10
 ```
 
 Common type emojis: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `style`, `build`, `ci`, `revert`.

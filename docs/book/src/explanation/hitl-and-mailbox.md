@@ -111,7 +111,7 @@ pub struct MailboxJob {
     pub origin: MailboxJobOrigin,
     pub sender_id: Option<String>,
     pub parent_run_id: Option<String>,
-    pub overrides: Option<Value>,
+    pub request_extras: Option<Value>,
 
     // Queue semantics
     pub priority: u8,            // 0 = highest, 255 = lowest, default 128

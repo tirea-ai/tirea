@@ -1926,4 +1926,115 @@ mod tests {
             assert!(debug.contains("InvalidArgument"));
         }
     }
+
+    mod cancellation_token_tests {
+        use super::*;
+        use crate::cancellation::CancellationToken;
+
+        #[test]
+        fn test_default_has_no_cancellation_token() {
+            let ctx = ToolCallContext::test_default();
+            assert!(ctx.cancellation_token.is_none());
+        }
+
+        #[test]
+        fn cancellation_token_is_accessible_on_context() {
+            let token = CancellationToken::new();
+            let mut ctx = ToolCallContext::test_default();
+            ctx.cancellation_token = Some(token.clone());
+
+            assert!(!ctx.cancellation_token.as_ref().unwrap().is_cancelled());
+            token.cancel();
+            assert!(ctx.cancellation_token.as_ref().unwrap().is_cancelled());
+        }
+
+        #[test]
+        fn cancellation_token_survives_clone() {
+            let token = CancellationToken::new();
+            let mut ctx = ToolCallContext::test_default();
+            ctx.cancellation_token = Some(token.clone());
+
+            let cloned_ctx = ctx.clone();
+            token.cancel();
+
+            assert!(cloned_ctx.cancellation_token.as_ref().unwrap().is_cancelled());
+        }
+
+        /// A tool that checks the cancellation token before doing work.
+        struct CancellationAwareTool;
+
+        #[async_trait]
+        impl Tool for CancellationAwareTool {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor::new("cancellable", "Cancellable", "Checks cancellation")
+            }
+
+            async fn execute(
+                &self,
+                _args: Value,
+                ctx: &ToolCallContext,
+            ) -> Result<ToolOutput, ToolError> {
+                if let Some(token) = &ctx.cancellation_token {
+                    if token.is_cancelled() {
+                        return Ok(ToolResult::error("cancellable", "cancelled").into());
+                    }
+                }
+                Ok(ToolResult::success("cancellable", json!("done")).into())
+            }
+        }
+
+        #[tokio::test]
+        async fn tool_executes_normally_without_cancellation() {
+            let token = CancellationToken::new();
+            let mut ctx = ToolCallContext::test_default();
+            ctx.cancellation_token = Some(token);
+
+            let tool = CancellationAwareTool;
+            let output = tool.execute(json!({}), &ctx).await.unwrap();
+            assert!(output.result.is_success());
+        }
+
+        #[tokio::test]
+        async fn tool_detects_cancellation_via_is_cancelled() {
+            let token = CancellationToken::new();
+            token.cancel();
+            let mut ctx = ToolCallContext::test_default();
+            ctx.cancellation_token = Some(token);
+
+            let tool = CancellationAwareTool;
+            let output = tool.execute(json!({}), &ctx).await.unwrap();
+            assert!(!output.result.is_success());
+            assert_eq!(output.result.message.as_deref(), Some("cancelled"));
+        }
+
+        #[tokio::test]
+        async fn tool_without_token_executes_normally() {
+            let ctx = ToolCallContext::test_default();
+            let tool = CancellationAwareTool;
+            let output = tool.execute(json!({}), &ctx).await.unwrap();
+            assert!(output.result.is_success());
+        }
+
+        #[tokio::test]
+        async fn tool_can_select_on_cancelled_future() {
+            let token = CancellationToken::new();
+            let mut ctx = ToolCallContext::test_default();
+            ctx.cancellation_token = Some(token.clone());
+
+            // Spawn a task that cancels after a short delay
+            let cancel_token = token.clone();
+            tokio::spawn(async move {
+                tokio::task::yield_now().await;
+                cancel_token.cancel();
+            });
+
+            // Simulate a tool using tokio::select! with the token
+            let ct = ctx.cancellation_token.as_ref().unwrap();
+            let was_cancelled = tokio::select! {
+                _ = ct.cancelled() => true,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => false,
+            };
+            assert!(was_cancelled);
+        }
+    }
 }
