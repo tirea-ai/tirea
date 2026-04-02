@@ -1439,4 +1439,260 @@ mod tests {
         assert!(names.contains(&"__loop_action_handlers"));
         assert!(names.contains(&"stop-condition:max-rounds"));
     }
+
+    // -- Plugin config persistence tests --
+    //
+    // Verify that AgentSpec.sections survive plugin activation/deactivation
+    // cycles.  Config for inactive plugins must not be discarded — the user
+    // may re-enable a plugin later and expects its config to still be there.
+
+    /// Plugin that reads typed config from AgentSpec.sections during on_activate.
+    struct StatefulPlugin {
+        name: &'static str,
+    }
+
+    #[derive(
+        Debug,
+        Clone,
+        Default,
+        PartialEq,
+        Eq,
+        serde::Serialize,
+        serde::Deserialize,
+        schemars::JsonSchema,
+    )]
+    struct StatefulPluginConfig {
+        pub level: String,
+        pub max_items: u32,
+    }
+
+    struct StatefulPluginConfigKey;
+    impl awaken_contract::PluginConfigKey for StatefulPluginConfigKey {
+        const KEY: &'static str = "stateful";
+        type Config = StatefulPluginConfig;
+    }
+
+    impl Plugin for StatefulPlugin {
+        fn descriptor(&self) -> PluginDescriptor {
+            PluginDescriptor { name: self.name }
+        }
+
+        fn config_schemas(&self) -> Vec<crate::plugins::ConfigSchema> {
+            vec![crate::plugins::ConfigSchema {
+                key: "stateful",
+                json_schema: serde_json::to_value(schemars::schema_for!(StatefulPluginConfig))
+                    .unwrap(),
+            }]
+        }
+
+        fn on_activate(
+            &self,
+            agent_spec: &AgentSpec,
+            _patch: &mut crate::state::MutationBatch,
+        ) -> Result<(), awaken_contract::StateError> {
+            // Verify we can read typed config during activation
+            let _config = agent_spec.config::<StatefulPluginConfigKey>()?;
+            Ok(())
+        }
+    }
+
+    fn stateful_config() -> serde_json::Value {
+        serde_json::json!({"level": "debug", "max_items": 100})
+    }
+
+    #[test]
+    fn config_sections_preserved_when_plugin_removed_from_plugin_ids() {
+        // Agent has config section for "stateful" plugin but plugin is NOT in plugin_ids.
+        let spec = AgentSpec {
+            plugin_ids: vec![], // No plugins active
+            ..make_spec("a")
+        }
+        .with_section("stateful", stateful_config());
+
+        let regs = build_registries(
+            vec![],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![("sp", Arc::new(StatefulPlugin { name: "sp" }))],
+            spec,
+        );
+
+        // Resolve succeeds — unclaimed section is just a warning, not an error.
+        let resolved = resolve(&regs, "a").unwrap();
+
+        // The section is still present in the resolved spec.
+        assert!(
+            resolved.spec.sections.contains_key("stateful"),
+            "config section must survive even when its plugin is not active"
+        );
+        assert_eq!(resolved.spec.sections["stateful"], stateful_config());
+    }
+
+    #[test]
+    fn reactivating_plugin_picks_up_existing_config_section() {
+        // Step 1: Resolve WITHOUT the plugin — config section survives.
+        let spec_without = AgentSpec {
+            plugin_ids: vec![],
+            ..make_spec("a")
+        }
+        .with_section("stateful", stateful_config());
+
+        let regs_without = build_registries(
+            vec![],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![("sp", Arc::new(StatefulPlugin { name: "sp" }))],
+            spec_without,
+        );
+        let resolved_without = resolve(&regs_without, "a").unwrap();
+        assert!(resolved_without.spec.sections.contains_key("stateful"));
+
+        // Step 2: Resolve WITH the plugin re-enabled — config validates and activates.
+        let spec_with = AgentSpec {
+            plugin_ids: vec!["sp".into()],
+            sections: resolved_without.spec.sections.clone(),
+            ..make_spec("a")
+        };
+
+        let regs_with = build_registries(
+            vec![],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![("sp", Arc::new(StatefulPlugin { name: "sp" }))],
+            spec_with,
+        );
+
+        // Should succeed — config section validates against plugin's schema.
+        let resolved_with = resolve(&regs_with, "a").unwrap();
+        assert_eq!(resolved_with.spec.sections["stateful"], stateful_config());
+    }
+
+    #[test]
+    fn on_activate_reads_typed_config_from_sections() {
+        let config = StatefulPluginConfig {
+            level: "warn".into(),
+            max_items: 50,
+        };
+        let spec = AgentSpec {
+            plugin_ids: vec!["sp".into()],
+            ..make_spec("a")
+        }
+        .with_section("stateful", serde_json::to_value(&config).unwrap());
+
+        // Verify typed read works at spec level
+        let read_config = spec.config::<StatefulPluginConfigKey>().unwrap();
+        assert_eq!(read_config, config);
+
+        // Resolve succeeds (on_activate also reads the config without error)
+        let regs = build_registries(
+            vec![],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![("sp", Arc::new(StatefulPlugin { name: "sp" }))],
+            spec,
+        );
+        assert!(resolve(&regs, "a").is_ok());
+    }
+
+    #[test]
+    fn on_deactivate_does_not_clear_sections() {
+        let plugin = StatefulPlugin { name: "sp" };
+
+        // Simulate deactivation
+        let mut patch = crate::state::MutationBatch::new();
+        plugin.on_deactivate(&mut patch).unwrap();
+
+        // Default on_deactivate is a no-op — no mutations emitted.
+        assert!(
+            patch.is_empty(),
+            "on_deactivate should not emit mutations that clear config sections"
+        );
+    }
+
+    #[test]
+    fn multiple_plugin_sections_survive_partial_activation() {
+        // Agent has config for two plugins but only activates one.
+        let spec = AgentSpec {
+            plugin_ids: vec!["vp".into()], // Only ValidatedPlugin active
+            ..make_spec("a")
+        }
+        .with_section(
+            "validated",
+            serde_json::json!({"mode": "strict", "threshold": 10}),
+        )
+        .with_section("stateful", stateful_config()); // StatefulPlugin NOT active
+
+        let regs = build_registries(
+            vec![],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![
+                ("vp", Arc::new(ValidatedPlugin { name: "vp" })),
+                ("sp", Arc::new(StatefulPlugin { name: "sp" })),
+            ],
+            spec,
+        );
+
+        let resolved = resolve(&regs, "a").unwrap();
+
+        // Both sections survive — active plugin's config is validated,
+        // inactive plugin's config is kept without validation.
+        assert!(resolved.spec.sections.contains_key("validated"));
+        assert!(
+            resolved.spec.sections.contains_key("stateful"),
+            "inactive plugin's config section must be preserved"
+        );
+    }
+
+    #[test]
+    fn config_defaults_when_section_absent_and_plugin_active() {
+        // Plugin is active but has no config section — should use defaults.
+        let spec = AgentSpec {
+            plugin_ids: vec!["sp".into()],
+            ..make_spec("a")
+        };
+        // No .with_section("stateful", ...) — section absent.
+
+        let read_config = spec.config::<StatefulPluginConfigKey>().unwrap();
+        assert_eq!(read_config, StatefulPluginConfig::default());
+
+        let regs = build_registries(
+            vec![],
+            "test-model",
+            ModelEntry {
+                provider: "p".into(),
+                model_name: "n".into(),
+            },
+            "p",
+            Arc::new(MockExecutor),
+            vec![("sp", Arc::new(StatefulPlugin { name: "sp" }))],
+            spec,
+        );
+        assert!(resolve(&regs, "a").is_ok());
+    }
 }

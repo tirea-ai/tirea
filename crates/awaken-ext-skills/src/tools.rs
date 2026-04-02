@@ -180,7 +180,8 @@ impl Tool for SkillActivateTool {
         // 3. Promote deferred tools so the LLM can see their schemas.
         //    Skill declares allowed_tools because it intends to use them now;
         //    if any are deferred, they must become eager before next inference.
-        if !applied_tool_ids.is_empty() {
+        //    Only write if DeferralState is registered (deferred-tools plugin active).
+        if !applied_tool_ids.is_empty() && ctx.state::<DeferralState>().is_some() {
             cmd.update::<DeferralState>(DeferralStateAction::PromoteBatch(
                 applied_tool_ids.clone(),
             ));

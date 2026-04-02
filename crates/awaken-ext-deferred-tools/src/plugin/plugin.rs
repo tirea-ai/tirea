@@ -11,7 +11,6 @@ use awaken_runtime::plugins::{Plugin, PluginDescriptor, PluginRegistrar};
 use awaken_runtime::state::MutationBatch;
 
 use crate::config::{DeferredToolsConfigKey, ToolLoadMode};
-use crate::policy::{ConfigOnlyPolicy, DeferralPolicy};
 use crate::state::{
     AgentToolPriorsKey, DeferToolAction, DeferralRegistry, DeferralRegistryAction, DeferralState,
     DeferralStateAction, DiscBetaAction, DiscBetaEntry, DiscBetaState, PromoteToolAction,
@@ -32,24 +31,18 @@ pub const DEFERRED_TOOLS_PLUGIN_ID: &str = "ext-deferred-tools";
 /// Registers state keys, the ToolSearch tool, and phase hooks that evaluate
 /// deferral policy at each inference step.
 pub struct DeferredToolsPlugin {
-    policy: Arc<dyn DeferralPolicy>,
     seed_tools: Vec<ToolDescriptor>,
 }
 
 impl DeferredToolsPlugin {
-    /// Create a new plugin with `ConfigOnlyPolicy` and the given seed tools.
+    /// Create a new plugin with the given seed tools.
+    ///
+    /// Initial classification uses config rules during `on_activate`.
+    /// Runtime promotes (ToolSearch, skill activation) are preserved across turns;
+    /// only `DiscBetaEvaluator` may re-defer idle tools after a multi-turn threshold.
     #[must_use]
     pub fn new(seed_tools: Vec<ToolDescriptor>) -> Self {
-        Self {
-            policy: Arc::new(ConfigOnlyPolicy),
-            seed_tools,
-        }
-    }
-
-    /// Create a new plugin with a custom deferral policy.
-    #[must_use]
-    pub fn with_policy(policy: Arc<dyn DeferralPolicy>, seed_tools: Vec<ToolDescriptor>) -> Self {
-        Self { policy, seed_tools }
+        Self { seed_tools }
     }
 }
 
@@ -82,9 +75,7 @@ impl Plugin for DeferredToolsPlugin {
         registrar.register_phase_hook(
             DEFERRED_TOOLS_PLUGIN_ID,
             Phase::BeforeInference,
-            DeferredToolsBeforeInferenceHook {
-                policy: Arc::clone(&self.policy),
-            },
+            DeferredToolsBeforeInferenceHook,
         )?;
         registrar.register_phase_hook(
             DEFERRED_TOOLS_PLUGIN_ID,

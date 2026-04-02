@@ -1,7 +1,5 @@
 //! Phase hooks for deferred tool management.
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use awaken_contract::StateError;
 use awaken_contract::contract::context_message::ContextMessage;
@@ -14,7 +12,7 @@ use awaken_runtime::phase::TypedScheduledActionHandler;
 use awaken_contract::contract::profile_store::ProfileOwner;
 
 use crate::config::{DeferredToolsConfigKey, ToolLoadMode};
-use crate::policy::{DeferralDecision, DeferralPolicy, DiscBetaEvaluator};
+use crate::policy::DiscBetaEvaluator;
 use crate::state::{
     AgentToolPriors, AgentToolPriorsKey, DeferToolAction, DeferralState, DeferralStateAction,
     DeferralStateValue, DiscBetaAction, DiscBetaEntry, DiscBetaState, PromoteToolAction,
@@ -115,9 +113,7 @@ fn is_enabled(ctx: &PhaseContext) -> bool {
 // BeforeInference hook
 // ---------------------------------------------------------------------------
 
-pub struct DeferredToolsBeforeInferenceHook {
-    pub policy: Arc<dyn DeferralPolicy>,
-}
+pub struct DeferredToolsBeforeInferenceHook;
 
 #[async_trait]
 impl PhaseHook for DeferredToolsBeforeInferenceHook {
@@ -132,44 +128,19 @@ impl PhaseHook for DeferredToolsBeforeInferenceHook {
         let deferral_state = ctx.state::<DeferralState>().cloned().unwrap_or_default();
         let usage_stats = ctx.state::<ToolUsageStats>().cloned().unwrap_or_default();
 
-        // Collect all tool IDs currently tracked in deferral state.
-        let tool_ids: Vec<String> = deferral_state.modes.keys().cloned().collect();
+        // NOTE: ConfigOnlyPolicy is NOT re-evaluated here.
+        //
+        // Initial classification is fully handled by `on_activate()`, which seeds
+        // DeferralState from config rules.  Re-evaluating config every turn would
+        // immediately undo runtime promotes (e.g. ToolSearch or skill activation
+        // promotes a tool → next turn ConfigOnlyPolicy sees config says Deferred
+        // → re-defers it after 1 turn).
+        //
+        // Only DiscBeta (below) may re-defer tools, and it has a multi-turn idle
+        // threshold (`defer_after`) that prevents instant reversal.
 
-        // Evaluate policy decisions (initial classification).
-        let decisions: Vec<DeferralDecision> =
-            self.policy
-                .evaluate(&usage_stats, &deferral_state, &config, &tool_ids);
-
-        // Schedule state updates only for tools whose mode actually changed.
-        for decision in &decisions {
-            let current = deferral_state
-                .modes
-                .get(&decision.tool_id)
-                .copied()
-                .unwrap_or(ToolLoadMode::Eager);
-            if current != decision.target_mode {
-                match decision.target_mode {
-                    ToolLoadMode::Deferred => {
-                        cmd.update::<DeferralState>(DeferralStateAction::Defer(
-                            decision.tool_id.clone(),
-                        ));
-                    }
-                    ToolLoadMode::Eager => {
-                        cmd.update::<DeferralState>(DeferralStateAction::Promote(
-                            decision.tool_id.clone(),
-                        ));
-                    }
-                }
-            }
-        }
-
-        // Compute effective deferred set from decisions.
+        // Effective set starts from current state (runtime promotes preserved).
         let mut effective = deferral_state.clone();
-        for decision in &decisions {
-            effective
-                .modes
-                .insert(decision.tool_id.clone(), decision.target_mode);
-        }
 
         // DiscBeta dynamic re-defer evaluation.
         let disc_beta_state = ctx.state::<DiscBetaState>().cloned().unwrap_or_default();

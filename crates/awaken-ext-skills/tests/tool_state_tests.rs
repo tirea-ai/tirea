@@ -923,3 +923,98 @@ async fn activate_same_skill_twice_is_idempotent() {
     assert_eq!(r1.result.status, ToolStatus::Success);
     assert_eq!(r2.result.status, ToolStatus::Success);
 }
+
+// ---------------------------------------------------------------------------
+// Deferred tool promotion tests
+// ---------------------------------------------------------------------------
+
+/// Without deferred-tools plugin active (no DeferralState in snapshot),
+/// skill activation should NOT attempt to write DeferralState.
+#[tokio::test]
+async fn activate_tool_command_no_promote_without_deferred_tools_plugin() {
+    let registry = make_registry_with_skills(&[EmbeddedSkillData {
+        skill_md: SKILL_WITH_TOOLS_MD,
+        references: &[],
+        assets: &[],
+    }]);
+    let tool = SkillActivateTool::new(registry);
+
+    // default_ctx() has no DeferralState seeded — simulates no deferred-tools plugin
+    let output = tool
+        .execute(json!({"skill": "tool-skill"}), &default_ctx())
+        .await
+        .unwrap();
+
+    assert_eq!(output.result.status, ToolStatus::Success);
+    // Should NOT touch deferred_tools.state since plugin is not active
+    assert!(
+        !output
+            .command
+            .touched_keys
+            .contains(&"deferred_tools.state".to_string()),
+        "should not write deferred_tools.state when deferred-tools plugin is not active"
+    );
+}
+
+/// With DeferralState seeded in the snapshot (deferred-tools plugin active),
+/// skill activation should promote allowed_tools.
+#[tokio::test]
+async fn activate_tool_command_promotes_deferred_tools_when_plugin_active() {
+    use awaken_contract::state::{Snapshot, StateKey, StateMap};
+    use awaken_ext_deferred_tools::config::ToolLoadMode;
+    use awaken_ext_deferred_tools::state::{DeferralState, DeferralStateValue};
+    use std::sync::Arc;
+
+    let registry = make_registry_with_skills(&[EmbeddedSkillData {
+        skill_md: SKILL_WITH_TOOLS_MD,
+        references: &[],
+        assets: &[],
+    }]);
+    let tool = SkillActivateTool::new(registry);
+
+    // Create a context with DeferralState seeded (simulates deferred-tools plugin active)
+    let mut state_map = StateMap::default();
+    state_map.insert::<DeferralState>(DeferralStateValue::default());
+    let snapshot = Snapshot::new(0, Arc::new(state_map));
+    let ctx = ToolCallContext {
+        snapshot,
+        ..ToolCallContext::test_default()
+    };
+
+    let output = tool
+        .execute(json!({"skill": "tool-skill"}), &ctx)
+        .await
+        .unwrap();
+
+    assert_eq!(output.result.status, ToolStatus::Success);
+    assert!(
+        output
+            .command
+            .touched_keys
+            .contains(&"deferred_tools.state".to_string()),
+        "command should write deferred_tools.state to promote allowed_tools"
+    );
+
+    // Apply and verify
+    let mut snapshot = Snapshot::new(0, Arc::new(StateMap::default()));
+    for op in output.command.patch.ops {
+        op.apply(&mut snapshot);
+    }
+
+    let deferral = snapshot.get::<DeferralState>().unwrap();
+    assert_eq!(
+        deferral.modes.get("Bash").copied(),
+        Some(ToolLoadMode::Eager),
+        "Bash should be promoted to Eager"
+    );
+    assert_eq!(
+        deferral.modes.get("Read").copied(),
+        Some(ToolLoadMode::Eager),
+        "Read should be promoted to Eager"
+    );
+    assert_eq!(
+        deferral.modes.get("Edit").copied(),
+        Some(ToolLoadMode::Eager),
+        "Edit should be promoted to Eager"
+    );
+}
