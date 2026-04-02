@@ -95,7 +95,7 @@ The `touched_keys` list enables conflict detection for `Exclusive` keys during p
 
 ## StateMap
 
-`StateMap` is the runtime's type-erased state container. It stores values as `Box<dyn Any + Send + Sync>` keyed by `TypeId`. The `get::<K>()` and `get_or_insert_default::<K>()` methods downcast to the concrete `K::Value` type.
+`StateMap` is the runtime's typed state container. It uses `typedmap::TypedMap` internally, keyed by zero-sized `TypedKey<K>` wrappers that hash and compare by `TypeId`. The `get::<K>()` and `get_or_insert_default::<K>()` methods retrieve the concrete `K::Value` type directly without downcasting.
 
 State keys registered with `persistent: true` in `StateKeyOptions` are serialized during checkpoint and restored on thread load. Non-persistent keys exist only in memory for the duration of the run.
 

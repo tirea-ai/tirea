@@ -1,6 +1,6 @@
 # 简介
 
-**Awaken** 是一个用 Rust 构建的模块化 AI 智能体运行时框架。它提供基于阶段的执行模型（含快照隔离与确定性重放）、带键作用域（thread/run）和合并策略（exclusive/commutative）的类型化状态引擎、用于可扩展性的插件生命周期系统，以及支持 AI SDK v6、AG-UI、A2A 和 ACP 多协议的服务器。
+**Awaken** 是一个用 Rust 构建的模块化 AI 智能体运行时框架。它提供基于阶段的执行模型（含快照隔离与确定性重放）、带键作用域（`thread` / `run`）和合并策略（`exclusive` / `commutative`）的类型化状态引擎、用于可扩展性的插件生命周期系统，以及支持 AI SDK v6、AG-UI、A2A 和 MCP（HTTP 及 stdio）的多协议服务面，以及 ACP stdio 协议面。
 
 ## Crate 概览
 
@@ -17,27 +17,24 @@
 | `awaken-ext-skills` | 技能包发现与激活 |
 | `awaken-ext-reminder` | 声明式提醒规则，在工具执行后触发 |
 | `awaken-ext-generative-ui` | 声明式 UI 组件（A2UI 协议） |
+| `awaken-ext-deferred-tools` | 基于概率模型的延迟工具加载 |
 | `awaken` | 门面 crate，重新导出核心模块 |
 
 ## 架构
 
 ```text
-┌─────────────────────────────────────────────────────┐
-│  应用层                                              │
-│  - 注册工具、定义智能体、调用 run_stream             │
-└─────────────────────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────┐
-│  AgentRuntime                                        │
-│  - 解析智能体、执行阶段、发射事件                     │
-└─────────────────────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────┐
-│  Thread + 状态引擎                                   │
-│  - 会话历史、快照隔离、状态键                         │
-└─────────────────────────────────────────────────────┘
+应用代码
+  注册 tool / model / provider / plugin / agent spec
+        |
+        v
+AgentRuntime
+  将 AgentSpec 解析为 ResolvedAgent
+  从插件构建 ExecutionEnv
+  执行 phase loop，并暴露 cancel / decision 控制面
+        |
+        v
+服务与存储表面
+  HTTP 路由、SSE 回放、mailbox、协议适配器、thread/run 持久化
 ```
 
 ## 核心原则
@@ -53,15 +50,13 @@
 
 ## 推荐阅读路径
 
-> 以下链接指向英文文档，中文翻译正在进行中。
-
 如果你是第一次接触本项目，建议按以下顺序阅读：
 
-1. 阅读 [第一个 Agent](../tutorials/first-agent.md) 了解最小可运行流程。
-2. 阅读 [第一个 Tool](../tutorials/first-tool.md) 理解状态读写。
-3. 在编写生产工具前，阅读 [Tool Trait 参考](../reference/tool-trait.md)。
-4. 使用 [构建 Agent](../how-to/build-an-agent.md) 和 [添加 Tool](../how-to/add-a-tool.md) 作为实现检查清单。
-5. 需要完整执行模型时，返回阅读 [架构](../explanation/architecture.md) 和 [Run 生命周期与阶段](../explanation/run-lifecycle-and-phases.md)。
+1. 阅读 [第一个 Agent](./tutorials/first-agent.md) 了解最小可运行流程。
+2. 阅读 [第一个 Tool](./tutorials/first-tool.md) 理解状态读写。
+3. 在编写生产工具前，阅读 [Tool Trait 参考](./reference/tool-trait.md)。
+4. 使用 [构建 Agent](./how-to/build-an-agent.md) 和 [添加 Tool](./how-to/add-a-tool.md) 作为实现检查清单。
+5. 需要完整执行模型时，返回阅读 [架构](./explanation/architecture.md) 和 [Run 生命周期与阶段](./explanation/run-lifecycle-and-phases.md)。
 
 ## 仓库导航
 

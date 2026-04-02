@@ -85,7 +85,7 @@ impl Plugin for AuditPlugin {
 
         registrar.register_phase_hook(
             "audit",
-            Phase::PostInference,
+            Phase::AfterInference,
             AuditHook,
         )?;
 
@@ -98,17 +98,23 @@ impl Plugin for AuditPlugin {
 
 ```rust,ignore
 use std::sync::Arc;
-use awaken::{AgentSpec, AgentRuntimeBuilder};
+use awaken::engine::GenaiExecutor;
+use awaken::{AgentSpec, AgentRuntimeBuilder, ModelSpec};
 
 let spec = AgentSpec::new("assistant")
-    .with_model("anthropic/claude-sonnet")
+    .with_model("claude-sonnet")
     .with_system_prompt("You are a helpful assistant.")
     .with_hook_filter("audit");
 
 let runtime = AgentRuntimeBuilder::new()
     .with_plugin("audit", Arc::new(AuditPlugin))
     .with_agent_spec(spec)
-    .with_provider("anthropic", Arc::new(provider))
+    .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
+    .with_model("claude-sonnet", ModelSpec {
+        id: "claude-sonnet".into(),
+        provider: "anthropic".into(),
+        model: "claude-sonnet-4-20250514".into(),
+    })
     .build()?;
 ```
 

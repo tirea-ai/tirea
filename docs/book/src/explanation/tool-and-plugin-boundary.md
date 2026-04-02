@@ -91,7 +91,7 @@ This separation means tools remain simple and focused on their domain logic. Cro
 
 | Aspect | User Tool | Plugin Tool |
 |--------|-----------|-------------|
-| Registration | `RuntimeBuilder::tool()` | `PluginRegistrar::register_tool()` |
+| Registration | `AgentRuntimeBuilder::with_tool()` | `PluginRegistrar::register_tool()` |
 | Lifecycle | Exists for the runtime's lifetime | Exists while the plugin is active |
 | Configuration | Direct construction | Derived from plugin config or agent spec |
 | Examples | Custom business logic tools | `AgentTool` (delegation), MCP tools, skill tools |

@@ -1,6 +1,6 @@
 # Introduction
 
-**Awaken** is a modular AI agent runtime framework built in Rust. It provides phase-based execution with snapshot isolation and deterministic replay, a typed state engine with key scoping (thread/run) and merge strategies (exclusive/commutative), a plugin lifecycle system for extensibility, and a multi-protocol server supporting AI SDK v6, AG-UI, A2A, and ACP.
+**Awaken** is a modular AI agent runtime framework built in Rust. It provides phase-based execution with snapshot isolation and deterministic replay, a typed state engine with key scoping (`thread` / `run`) and merge strategies (`exclusive` / `commutative`), a plugin lifecycle system for extensibility, and a multi-protocol server surface supporting AI SDK v6, AG-UI, A2A, and MCP over HTTP and stdio, plus ACP over stdio.
 
 ## Crate Overview
 
@@ -17,27 +17,24 @@
 | `awaken-ext-skills` | Skill package discovery and activation |
 | `awaken-ext-reminder` | Declarative reminder rules triggered after tool execution |
 | `awaken-ext-generative-ui` | Declarative UI components (A2UI protocol) |
+| `awaken-ext-deferred-tools` | Deferred tool loading with probabilistic promotion |
 | `awaken` | Facade crate that re-exports core modules |
 
 ## Architecture
 
 ```text
-┌─────────────────────────────────────────────────────┐
-│  Application Layer                                    │
-│  - Register tools, define agents, call run_stream    │
-└─────────────────────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────┐
-│  AgentRuntime                                        │
-│  - Resolve agents, execute phases, emit events       │
-└─────────────────────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────┐
-│  Thread + State Engine                               │
-│  - Thread history, snapshot isolation, state keys    │
-└─────────────────────────────────────────────────────┘
+Application code
+  registers tools / models / providers / plugins / agent specs
+        |
+        v
+AgentRuntime
+  resolves AgentSpec -> ResolvedAgent
+  builds ExecutionEnv from plugins
+  runs the phase loop and exposes cancel / decision control
+        |
+        v
+Server + storage surfaces
+  HTTP routes, SSE replay, mailbox, protocol adapters, thread/run persistence
 ```
 
 ## Core Principle

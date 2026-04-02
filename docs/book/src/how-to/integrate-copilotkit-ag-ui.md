@@ -24,19 +24,21 @@ tracing-subscriber = "0.3"
 ```rust,ignore
 use std::sync::Arc;
 
+use awaken::engine::GenaiExecutor;
 use awaken::contract::storage::ThreadRunStore;
-use awaken::registry_spec::AgentSpec;
-use awaken::{AgentRuntimeBuilder, RunRequest};
+use awaken::registry_spec::{AgentSpec, ModelSpec};
+use awaken::stores::{InMemoryMailboxStore, InMemoryStore};
+use awaken::AgentRuntimeBuilder;
 use awaken::server::app::{AppState, ServerConfig};
+use awaken::server::mailbox::{Mailbox, MailboxConfig};
 use awaken::server::routes::build_router;
-use awaken::stores::InMemoryStore;
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().with_target(true).init();
 
     let agent_spec = AgentSpec::new("copilotkit-agent")
-        .with_model("default")
+        .with_model("gpt-4o-mini")
         .with_system_prompt(
             "You are a CopilotKit-powered assistant. \
              Update shared state and suggest actions when appropriate.",
@@ -44,6 +46,15 @@ async fn main() {
         .with_max_rounds(10);
 
     let runtime = AgentRuntimeBuilder::new()
+        .with_provider("openai", Arc::new(GenaiExecutor::new()))
+        .with_model(
+            "gpt-4o-mini",
+            ModelSpec {
+                id: "gpt-4o-mini".into(),
+                provider: "openai".into(),
+                model: "gpt-4o-mini".into(),
+            },
+        )
         .with_agent_spec(agent_spec)
         .build()
         .expect("failed to build runtime");
@@ -52,12 +63,12 @@ async fn main() {
     let store = Arc::new(InMemoryStore::new());
     let resolver = runtime.resolver_arc();
 
-    let mailbox_store = Arc::new(awaken::stores::InMemoryMailboxStore::new());
-    let mailbox = Arc::new(awaken::server::mailbox::Mailbox::new(
+    let mailbox_store = Arc::new(InMemoryMailboxStore::new());
+    let mailbox = Arc::new(Mailbox::new(
         runtime.clone(),
         mailbox_store as Arc<dyn awaken::contract::MailboxStore>,
         format!("copilotkit:{}", std::process::id()),
-        awaken::server::mailbox::MailboxConfig::default(),
+        MailboxConfig::default(),
     ));
 
     let state = AppState::new(
@@ -83,6 +94,9 @@ async fn main() {
 The server automatically registers AG-UI routes at:
 
 - `POST /v1/ag-ui/run` -- create a new run and stream AG-UI events
+- `POST /v1/ag-ui/threads/:thread_id/runs` -- start a thread-scoped run
+- `POST /v1/ag-ui/agents/:agent_id/runs` -- start an agent-scoped run
+- `POST /v1/ag-ui/threads/:thread_id/interrupt` -- interrupt a running thread
 - `GET /v1/ag-ui/threads/:id/messages` -- retrieve thread messages
 
 2. Connect the CopilotKit frontend.
@@ -139,7 +153,7 @@ npm run dev
 
 ## Related Example
 
-- `examples/examples/copilotkit_starter.rs`
+- `examples/copilotkit-starter/agent/src/main.rs`
 
 ## Key Files
 
@@ -149,7 +163,7 @@ npm run dev
 | `crates/awaken-server/src/protocols/ag_ui/encoder.rs` | AG-UI SSE event encoder |
 | `crates/awaken-server/src/routes.rs` | Unified router builder |
 | `crates/awaken-server/src/app.rs` | `AppState` and `ServerConfig` |
-| `examples/examples/copilotkit_starter.rs` | Full working example |
+| `examples/copilotkit-starter/agent/src/main.rs` | Backend entry for the CopilotKit starter |
 
 ## Related
 

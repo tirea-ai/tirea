@@ -13,6 +13,7 @@ pub struct AgentSpec {
     pub max_rounds: usize,                          // default: 16
     pub max_continuation_retries: usize,            // default: 2
     pub context_policy: Option<ContextWindowPolicy>,
+    pub reasoning_effort: Option<ReasoningEffort>,
     pub plugin_ids: Vec<String>,
     pub active_hook_filter: HashSet<String>,
     pub allowed_tools: Option<Vec<String>>,
@@ -33,6 +34,7 @@ AgentSpec::new(id) -> Self
     .with_model(model) -> Self
     .with_system_prompt(prompt) -> Self
     .with_max_rounds(n) -> Self
+    .with_reasoning_effort(effort) -> Self
     .with_hook_filter(plugin_id) -> Self
     .with_config::<K>(config) -> Result<Self, StateError>
     .with_delegate(agent_id) -> Self
@@ -135,6 +137,7 @@ Configuration for agents running on external A2A servers.
 pub struct RemoteEndpoint {
     pub base_url: String,
     pub bearer_token: Option<String>,
+    pub agent_id: Option<String>,
     pub poll_interval_ms: u64,    // default: 2000
     pub timeout_ms: u64,          // default: 300_000
 }
@@ -269,8 +272,12 @@ pub struct CircuitBreakerConfig {
 | `observability` | Registers the observability plugin; emits traces and metrics |
 | `mcp` | Enables MCP tool bridge; tools from MCP servers are auto-registered |
 | `skills` | Enables the skills subsystem for reusable agent capabilities |
+| `reminder` | Registers the reminder plugin; injects context messages after tool execution based on pattern rules |
 | `server` | Builds the HTTP server with SSE streaming and protocol adapters |
 | `generative-ui` | Enables generative UI component streaming to frontends |
+
+The workspace also contains extension crates that are not currently exposed as
+facade feature flags on `awaken`. Today that includes `awaken-ext-deferred-tools`.
 
 ## Custom plugin configuration
 

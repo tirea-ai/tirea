@@ -315,18 +315,19 @@ async fn interrupt_thread(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let cancelled = st
+    let interrupted = st
         .mailbox
-        .cancel(&id)
+        .interrupt(&id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    if cancelled {
+    if interrupted.active_job.is_some() || interrupted.superseded_count > 0 {
         return Ok((
             StatusCode::ACCEPTED,
             Json(json!({
                 "status": "interrupt_requested",
                 "thread_id": id,
+                "superseded_jobs": interrupted.superseded_count,
             })),
         )
             .into_response());

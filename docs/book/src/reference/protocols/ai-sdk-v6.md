@@ -32,9 +32,13 @@ SSE stream (`text/event-stream`). Each line is a JSON-encoded `UIStreamEvent`.
 
 | Route | Method | Description |
 |-------|--------|-------------|
-| `/v1/ai-sdk/streams/:run_id` | GET | Reconnect to an active run's SSE stream. |
-| `/v1/ai-sdk/runs/:run_id/stream` | GET | Alias for stream reconnect. |
-| `/v1/ai-sdk/threads/:id/messages` | GET | Retrieve thread message history. |
+| `/v1/ai-sdk/threads/:thread_id/runs` | POST | Start a thread-scoped run. |
+| `/v1/ai-sdk/agents/:agent_id/runs` | POST | Start an agent-scoped run. |
+| `/v1/ai-sdk/chat/:thread_id/stream` | GET | Reconnect to a thread's SSE stream. |
+| `/v1/ai-sdk/threads/:thread_id/stream` | GET | Alias for thread-based reconnect. |
+| `/v1/ai-sdk/threads/:thread_id/messages` | GET | Retrieve thread message history. |
+| `/v1/ai-sdk/threads/:thread_id/cancel` | POST | Cancel a thread. |
+| `/v1/ai-sdk/threads/:thread_id/interrupt` | POST | Interrupt a thread. |
 
 ## Event Mapping
 

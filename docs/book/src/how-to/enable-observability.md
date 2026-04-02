@@ -20,13 +20,28 @@ tokio = { version = "1", features = ["full"] }
 
 ```rust,ignore
 use std::sync::Arc;
-use awaken::{AgentRuntimeBuilder, Plugin};
+use awaken::engine::GenaiExecutor;
 use awaken::ext_observability::{ObservabilityPlugin, InMemorySink};
+use awaken::registry_spec::{AgentSpec, ModelSpec};
+use awaken::{AgentRuntimeBuilder, Plugin};
 
 let sink = InMemorySink::new();
 let obs_plugin = ObservabilityPlugin::new(sink.clone());
+let agent_spec = AgentSpec::new("observed-agent")
+    .with_model("gpt-4o-mini")
+    .with_system_prompt("You are a helpful assistant.")
+    .with_hook_filter("observability");
 
 let runtime = AgentRuntimeBuilder::new()
+    .with_provider("openai", Arc::new(GenaiExecutor::new()))
+    .with_model(
+        "gpt-4o-mini",
+        ModelSpec {
+            id: "gpt-4o-mini".into(),
+            provider: "openai".into(),
+            model: "gpt-4o-mini".into(),
+        },
+    )
     .with_agent_spec(agent_spec)
     .with_plugin("observability", Arc::new(obs_plugin) as Arc<dyn Plugin>)
     .build()
@@ -59,8 +74,10 @@ for stat in metrics.stats_by_tool() {
 
 ```rust,ignore
 use std::sync::Arc;
-use awaken::{AgentRuntimeBuilder, Plugin};
+use awaken::engine::GenaiExecutor;
 use awaken::ext_observability::{ObservabilityPlugin, OtelMetricsSink};
+use awaken::registry_spec::{AgentSpec, ModelSpec};
+use awaken::{AgentRuntimeBuilder, Plugin};
 use opentelemetry_sdk::trace::SdkTracerProvider;
 
 let provider = SdkTracerProvider::builder()
@@ -69,8 +86,21 @@ let provider = SdkTracerProvider::builder()
 let tracer = provider.tracer("awaken");
 
 let obs_plugin = ObservabilityPlugin::new(OtelMetricsSink::new(tracer));
+let agent_spec = AgentSpec::new("observed-agent")
+    .with_model("gpt-4o-mini")
+    .with_system_prompt("You are a helpful assistant.")
+    .with_hook_filter("observability");
 
 let runtime = AgentRuntimeBuilder::new()
+    .with_provider("openai", Arc::new(GenaiExecutor::new()))
+    .with_model(
+        "gpt-4o-mini",
+        ModelSpec {
+            id: "gpt-4o-mini".into(),
+            provider: "openai".into(),
+            model: "gpt-4o-mini".into(),
+        },
+    )
     .with_agent_spec(agent_spec)
     .with_plugin("observability", Arc::new(obs_plugin) as Arc<dyn Plugin>)
     .build()

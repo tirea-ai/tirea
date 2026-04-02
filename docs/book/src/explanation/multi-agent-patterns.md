@@ -110,6 +110,9 @@ pub trait AgentBackend: Send + Sync {
         &self,
         agent_id: &str,
         messages: Vec<Message>,
+        event_sink: Arc<dyn EventSink>,
+        parent_run_id: Option<String>,
+        parent_tool_call_id: Option<String>,
     ) -> Result<DelegateRunResult, AgentBackendError>;
 }
 ```

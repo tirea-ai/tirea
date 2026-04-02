@@ -13,10 +13,11 @@ Use this when you need to assemble an agent with tools, persistence, and a provi
 1. Define the agent spec.
 
 ```rust,ignore
-use awaken::{AgentSpec, AgentRuntimeBuilder};
+use awaken::engine::GenaiExecutor;
+use awaken::{AgentSpec, AgentRuntimeBuilder, ModelSpec};
 
 let spec = AgentSpec::new("assistant")
-    .with_model("anthropic/claude-sonnet")
+    .with_model("claude-sonnet")
     .with_system_prompt("You are a helpful assistant.")
     .with_max_rounds(10);
 ```
@@ -32,11 +33,16 @@ let builder = AgentRuntimeBuilder::new()
     .with_tool("calculator", Arc::new(CalculatorTool));
 ```
 
-3. Register a provider.
+3. Register a provider and a model.
 
 ```rust,ignore
 let builder = builder
-    .with_provider("anthropic", Arc::new(my_provider));
+    .with_provider("anthropic", Arc::new(GenaiExecutor::new()))
+    .with_model("claude-sonnet", ModelSpec {
+        id: "claude-sonnet".into(),
+        provider: "anthropic".into(),
+        model: "claude-sonnet-4-20250514".into(),
+    });
 ```
 
 4. Attach persistence.
@@ -72,7 +78,7 @@ let handle = runtime.run(request, sink.clone()).await?;
 
 ## Verify
 
-Call the `/health` endpoint (if using the server feature) or inspect the `RunHandle` result to confirm the agent loop completed without errors.
+Call the `/health` endpoint (if using the server feature) or inspect the returned `AgentRunResult` to confirm the agent loop completed without errors.
 
 ## Common Errors
 
