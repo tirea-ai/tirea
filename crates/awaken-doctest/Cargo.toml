@@ -7,7 +7,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-awaken = { version = "0.1.0", path = "../awaken", features = ["full"] }
+awaken = { package = "awaken-agent", version = "0.1.1", path = "../awaken", features = ["full"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
